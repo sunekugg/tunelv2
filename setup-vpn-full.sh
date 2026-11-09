@@ -2977,6 +2977,10 @@ def init_db():
                 ("Server Utama", DEFAULT_DOMAIN, DEFAULT_CITY, DEFAULT_ISP)
             )
         conn.commit()
+    try:
+        os.chmod(DB_PATH, 0o600)
+    except Exception:
+        pass
 
 def get_setting(key, default=""):
     with db_conn() as conn:
@@ -7915,24 +7919,52 @@ IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
 systemctl enable --now vnstat >/dev/null 2>&1 || true
 vnstat --add -i "$IFACE" >/dev/null 2>&1 || true
 
-ufw disable >/dev/null 2>&1 || true
+ufw allow 22/tcp >/dev/null 2>&1 || true
+ufw allow 53/udp >/dev/null 2>&1 || true
+ufw allow 53/tcp >/dev/null 2>&1 || true
+ufw allow 80/tcp >/dev/null 2>&1 || true
+ufw allow 443/tcp >/dev/null 2>&1 || true
+ufw allow 8443/tcp >/dev/null 2>&1 || true
+ufw allow 8080/tcp >/dev/null 2>&1 || true
+ufw allow 8880/tcp >/dev/null 2>&1 || true
+ufw allow 2052/tcp >/dev/null 2>&1 || true
+ufw allow 2053/tcp >/dev/null 2>&1 || true
+ufw allow 2082/tcp >/dev/null 2>&1 || true
+ufw allow 2083/tcp >/dev/null 2>&1 || true
+ufw allow 90/tcp >/dev/null 2>&1 || true
+ufw allow 444/tcp >/dev/null 2>&1 || true
+ufw allow 3128/tcp >/dev/null 2>&1 || true
+ufw allow 1194/tcp >/dev/null 2>&1 || true
+ufw allow 25000/udp >/dev/null 2>&1 || true
+ufw allow 5300/udp >/dev/null 2>&1 || true
+ufw allow 5300/tcp >/dev/null 2>&1 || true
+ufw allow 36712/udp >/dev/null 2>&1 || true
+ufw allow 7100:7600/tcp >/dev/null 2>&1 || true
+ufw allow 9080/tcp >/dev/null 2>&1 || true
+ufw allow 9088/tcp >/dev/null 2>&1 || true
+ufw --force enable >/dev/null 2>&1 || true
 iptables -P INPUT ACCEPT && iptables -P FORWARD ACCEPT && iptables -P OUTPUT ACCEPT
 
 systemctl daemon-reload
 systemctl unmask nginx dropbear xray >/dev/null 2>&1 || true
 systemctl enable --now dropbear xray vpn-ws-bridge vpn-proto-daemons nginx vpn-telegram-bot
 systemctl restart dropbear xray vpn-ws-bridge vpn-proto-daemons nginx vpn-telegram-bot
+chmod 700 /etc/vpn-bot 2>/dev/null || true
+chmod 600 /etc/vpn-bot/vpn_data.db 2>/dev/null || true
 
 echo "========================================================================"
 echo "          INSTALASI PORTABLE SELESAI & SEMUA SERVICE AKTIF!             "
 echo "========================================================================"
 echo " Domain VPS      : $DOMAIN"
 echo " Lokasi / ISP    : $VPS_CITY / $VPS_ISP"
-echo " Status Dropbear : $(systemctl is-active dropbear)"
-echo " Status Nginx    : $(systemctl is-active nginx)"
-echo " Status Xray     : $(systemctl is-active xray)"
-echo " Status WS-Bridge: $(systemctl is-active vpn-ws-bridge)"
-echo " Status Bot      : $(systemctl is-active vpn-telegram-bot)"
+echo "-----------------------------------------------------------------------"
+for srv in xray dropbear nginx vpn-ws-bridge vpn-proto-daemons vpn-telegram-bot; do
+    st=$(systemctl is-active "$srv" 2>/dev/null || echo dead)
+    printf " %-24s : %s\n" "$srv" "$st"
+done
+echo "-----------------------------------------------------------------------"
+echo " SlowDNS        : UDP/TCP 53, 5300, 25000, 36712"
+echo " PUB KEY        : $(cat /etc/vpn-bot/id_ed25519.pub 2>/dev/null || echo '-')"
 echo "========================================================================"
 """)
     os.chmod(FULL_SCRIPT_PATH, 0o755)
@@ -8515,22 +8547,50 @@ IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
 systemctl enable --now vnstat >/dev/null 2>&1 || true
 vnstat --add -i "$IFACE" >/dev/null 2>&1 || true
 
-ufw disable >/dev/null 2>&1 || true
+ufw allow 22/tcp >/dev/null 2>&1 || true
+ufw allow 53/udp >/dev/null 2>&1 || true
+ufw allow 53/tcp >/dev/null 2>&1 || true
+ufw allow 80/tcp >/dev/null 2>&1 || true
+ufw allow 443/tcp >/dev/null 2>&1 || true
+ufw allow 8443/tcp >/dev/null 2>&1 || true
+ufw allow 8080/tcp >/dev/null 2>&1 || true
+ufw allow 8880/tcp >/dev/null 2>&1 || true
+ufw allow 2052/tcp >/dev/null 2>&1 || true
+ufw allow 2053/tcp >/dev/null 2>&1 || true
+ufw allow 2082/tcp >/dev/null 2>&1 || true
+ufw allow 2083/tcp >/dev/null 2>&1 || true
+ufw allow 90/tcp >/dev/null 2>&1 || true
+ufw allow 444/tcp >/dev/null 2>&1 || true
+ufw allow 3128/tcp >/dev/null 2>&1 || true
+ufw allow 1194/tcp >/dev/null 2>&1 || true
+ufw allow 25000/udp >/dev/null 2>&1 || true
+ufw allow 5300/udp >/dev/null 2>&1 || true
+ufw allow 5300/tcp >/dev/null 2>&1 || true
+ufw allow 36712/udp >/dev/null 2>&1 || true
+ufw allow 7100:7600/tcp >/dev/null 2>&1 || true
+ufw allow 9080/tcp >/dev/null 2>&1 || true
+ufw allow 9088/tcp >/dev/null 2>&1 || true
+ufw --force enable >/dev/null 2>&1 || true
 iptables -P INPUT ACCEPT && iptables -P FORWARD ACCEPT && iptables -P OUTPUT ACCEPT
 
 systemctl daemon-reload
 systemctl unmask nginx dropbear xray >/dev/null 2>&1 || true
 systemctl enable --now dropbear xray vpn-ws-bridge vpn-proto-daemons nginx vpn-telegram-bot
 systemctl restart dropbear xray vpn-ws-bridge vpn-proto-daemons nginx vpn-telegram-bot
+chmod 700 /etc/vpn-bot 2>/dev/null || true
+chmod 600 /etc/vpn-bot/vpn_data.db 2>/dev/null || true
 
 echo "========================================================================"
 echo "          INSTALASI PORTABLE SELESAI & SEMUA SERVICE AKTIF!             "
 echo "========================================================================"
 echo " Domain VPS      : $DOMAIN"
 echo " Lokasi / ISP    : $VPS_CITY / $VPS_ISP"
-echo " Status Dropbear : $(systemctl is-active dropbear)"
-echo " Status Nginx    : $(systemctl is-active nginx)"
-echo " Status Xray     : $(systemctl is-active xray)"
-echo " Status WS-Bridge: $(systemctl is-active vpn-ws-bridge)"
-echo " Status Bot      : $(systemctl is-active vpn-telegram-bot)"
+echo "-----------------------------------------------------------------------"
+for srv in xray dropbear nginx vpn-ws-bridge vpn-proto-daemons vpn-telegram-bot; do
+    st=$(systemctl is-active "$srv" 2>/dev/null || echo dead)
+    printf " %-24s : %s\n" "$srv" "$st"
+done
+echo "-----------------------------------------------------------------------"
+echo " SlowDNS        : UDP/TCP 53, 5300, 25000, 36712"
+echo " PUB KEY        : $(cat /etc/vpn-bot/id_ed25519.pub 2>/dev/null || echo '-')"
 echo "========================================================================"
