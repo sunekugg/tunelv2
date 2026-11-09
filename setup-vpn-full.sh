@@ -64,9 +64,13 @@ apt-get update -y -o DPkg::Lock::Timeout=120
 apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o DPkg::Lock::Timeout=120 \
     curl wget jq git unzip tar socat cron net-tools lsof psmisc \
     iptables iptables-persistent netfilter-persistent fail2ban certbot \
-    nginx libnginx-mod-stream openssh-server dropbear squid openvpn easy-rsa \
+    nginx openssh-server dropbear squid openvpn easy-rsa \
     build-essential zlib1g-dev bzip2 python3 python3-pip python3-venv \
-    sqlite3 bc vnstat wondershaper logrotate qrencode openssl
+    sqlite3 bc vnstat wondershaper logrotate qrencode openssl >/dev/null 2>&1 || true
+apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+    libnginx-mod-stream >/dev/null 2>&1 || \
+apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+    nginx-full >/dev/null 2>&1 || true
 apt-get install -y -o DPkg::Lock::Timeout=60 libcrypt-dev python3-full >/dev/null 2>&1 || true
 
 PUBLIC_IP=$(curl -s4 --max-time 5 ifconfig.me || curl -s4 --max-time 5 api.ipify.org || echo "127.0.0.1")
@@ -7706,9 +7710,13 @@ apt-get update -y -o DPkg::Lock::Timeout=120
 apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o DPkg::Lock::Timeout=120 \\
     curl wget jq git unzip tar socat cron net-tools lsof psmisc \\
     iptables iptables-persistent netfilter-persistent fail2ban certbot \\
-    nginx libnginx-mod-stream openssh-server dropbear squid openvpn easy-rsa \\
+    nginx openssh-server dropbear squid openvpn easy-rsa \\
     build-essential zlib1g-dev bzip2 python3 python3-pip python3-venv \\
-    sqlite3 bc vnstat wondershaper logrotate qrencode openssl
+    sqlite3 bc vnstat wondershaper logrotate qrencode openssl >/dev/null 2>&1 || true
+apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \\
+    libnginx-mod-stream >/dev/null 2>&1 || \\
+apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \\
+    nginx-full >/dev/null 2>&1 || true
 apt-get install -y -o DPkg::Lock::Timeout=60 libcrypt-dev python3-full >/dev/null 2>&1 || true
 
 PUBLIC_IP=$(curl -s4 --max-time 5 ifconfig.me || curl -s4 --max-time 5 api.ipify.org || echo "127.0.0.1")
