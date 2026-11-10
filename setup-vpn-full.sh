@@ -4296,13 +4296,15 @@ async def cb_adm_slowdns_udp(cb: CallbackQuery):
         return engine.run_cmd(f"systemctl is-active {name}").strip() or "dead"
     s_sd = await asyncio.to_thread(_stat, "slowdns")
     s_uc = await asyncio.to_thread(_stat, "udp-custom")
+    s_ug = await asyncio.to_thread(_stat, "udpgw")
     txt = (
         "<b>MANAJEMEN SlowDNS & UDP-Custom</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• <b>SlowDNS (dnstt)</b>  : {s_sd}\n"
+        f"• <b>SlowDNS (VayDNS multi-record)</b> : {s_sd}\n"
         f"• <b>UDP-Custom</b>       : {s_uc}\n"
-        f"• <b>NS</b>              : <code>ns.{html.escape(DEFAULT_DOMAIN)}</code>\n"
+        f"• <b>NS</b>              : <code>ns-{html.escape(DEFAULT_DOMAIN)}</code>\n"
         f"• <b>SlowDNS Port</b>    : <code>53, 5300</code>\n"
         f"• <b>UDP-Custom</b>      : <code>1-65535</code>\n"
+        f"• <b>UDPGW Port</b>      : <code>7300</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>PUBLIC KEY</b>:\n<code>{html.escape(pub)}</code>"
     )
@@ -4311,6 +4313,7 @@ async def cb_adm_slowdns_udp(cb: CallbackQuery):
         [InlineKeyboardButton(text="🌐 Regenerate Unit NS (Domain Baru)", callback_data="sd_act:regen_ns")],
         [InlineKeyboardButton(text="🔁 Restart SlowDNS", callback_data="sd_act:restart_sd")],
         [InlineKeyboardButton(text="🔁 Restart UDP-Custom", callback_data="sd_act:restart_uc")],
+        [InlineKeyboardButton(text="🔁 Restart UDPGW (badvpn)", callback_data="sd_act:restart_ug")],
         [InlineKeyboardButton(text="🧹 Reset iptables & Restart Semua", callback_data="sd_act:restart_all")],
         [InlineKeyboardButton(text="⬅️ Kembali ke Panel Admin", callback_data="admin_home")]
     ])
@@ -4340,7 +4343,7 @@ async def cb_sd_regen(cb: CallbackQuery):
     fake_cb = cb
     await cb_adm_slowdns_udp(fake_cb)
 
-@router.callback_query(F.data.in_({"sd_act:restart_sd", "sd_act:restart_uc", "sd_act:restart_all"}))
+@router.callback_query(F.data.in_({"sd_act:restart_sd", "sd_act:restart_uc", "sd_act:restart_ug", "sd_act:restart_all"}))
 async def cb_sd_restart(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         return
@@ -4352,9 +4355,12 @@ async def cb_sd_restart(cb: CallbackQuery):
         elif act == "restart_uc":
             engine.run_cmd("systemctl restart udp-custom")
             msg = "🔁 udp-custom di-restart."
+        elif act == "restart_ug":
+            engine.run_cmd("systemctl restart udpgw")
+            msg = "🔁 udpgw (badvpn :7300) di-restart."
         else:
             engine.run_cmd("/etc/iptables/apply-slowdns-udp.sh")
-            engine.run_cmd("systemctl restart slowdns udp-custom iptables-restore")
+            engine.run_cmd("systemctl restart slowdns udp-custom udpgw iptables-restore")
             msg = "🧹 iptables di-reset & slowdns+udp-custom+iptables-restore di-restart."
         return msg
     msg = await asyncio.to_thread(_do)
