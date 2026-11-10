@@ -4293,7 +4293,8 @@ async def cb_adm_slowdns_udp(cb: CallbackQuery):
         return pub
     pub = await asyncio.to_thread(_slowdns_info)
     def _stat(name):
-        return engine.run_cmd(f"systemctl is-active {name}").strip() or "dead"
+        r = engine.run_cmd(f"systemctl is-active {name}")
+        return (r.stdout or "").strip() or "dead"
     s_sd = await asyncio.to_thread(_stat, "slowdns")
     s_uc = await asyncio.to_thread(_stat, "udp-custom")
     s_ug = await asyncio.to_thread(_stat, "udpgw")
