@@ -478,7 +478,7 @@ class DNSForwarderProtocol(asyncio.DatagramProtocol):
 async def main():
     servers = []
     for port, ohp in ((9080, True), (9088, True), (1194, False), (1080, False),
-                      (7100, False), (7200, False), (7300, False), (7400, False), (7500, False), (7600, False)):
+                      (7100, False), (7200, False), (7400, False), (7500, False), (7600, False)):
         try:
             servers.append(await asyncio.start_server(lambda r, w, o=ohp: forward_stream(r, w, 90, o), "0.0.0.0", port))
         except Exception:
@@ -4324,7 +4324,7 @@ async def cb_sd_regen(cb: CallbackQuery):
     def _regen():
         import os as _os
         _os.system("rm -f /etc/slowdns/server.key /etc/slowdns/server.pub")
-        _os.system("/usr/local/bin/dnstt-server -gen-key -privkey-file /etc/slowdns/server.key -pubkey-file /etc/slowdns/server.pub")
+        _os.system("/usr/local/bin/vaydns-server -gen-key -privkey-file /etc/slowdns/server.key -pubkey-file /etc/slowdns/server.pub")
         _os.system("chmod 600 /etc/slowdns/server.key")
         _os.system("systemctl restart slowdns")
         pub = "-"
@@ -4370,7 +4370,7 @@ async def cb_sd_regenservice(cb: CallbackQuery):
         unit = (
             "[Unit]\nDescription=SlowDNS dnstt Server\nAfter=network.target\n\n"
             "[Service]\n"
-            f"ExecStart=/usr/local/bin/dnstt-server -udp :5300 -privkey-file /etc/slowdns/server.key ns.{dom} 127.0.0.1:90\n"
+            f"ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns.{dom} -upstream 127.0.0.1:90 -record-type txt\n"
             "Restart=on-failure\nRestartSec=3\n\n"
             "[Install]\nWantedBy=multi-user.target\n"
         )
@@ -8223,13 +8223,31 @@ echo "[6/6b] Memasang SlowDNS (dnstt) & UDP-Custom..."
 ARCH_X=$(uname -m)
 case "$ARCH_X" in x86_64) XARCH="amd64";; aarch64|arm64) XARCH="arm64";; *) XARCH="amd64";; esac
 mkdir -p /etc/slowdns /etc/udp /etc/iptables
-# --- dnstt-server ---
-if [[ ! -x /usr/local/bin/dnstt-server ]]; then
-    wget -qO /usr/local/bin/dnstt-server \
-        "https://github.com/net2share/dnstt/releases/download/latest/dnstt-server-linux-${XARCH}" \
+VAYDNS_BASE="https://raw.githubusercontent.com/sunekugg/tunelv2/main/bin"
+# --- vaydns-server (mod VayDNS: multi-record TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA) ---
+if [[ ! -x /usr/local/bin/vaydns-server ]]; then
+    wget -qO /usr/local/bin/vaydns-server \\
+        "${VAYDNS_BASE}/vaydns-server-linux-${XARCH}" \\
+        2>/dev/null || \\
+    wget -qO /usr/local/bin/vaydns-server \\
+        "https://github.com/net2share/vaydns/releases/download/v0.2.8/vaydns-server-linux-${XARCH}" \\
         2>/dev/null || true
-    chmod +x /usr/local/bin/dnstt-server 2>/dev/null || true
+    chmod +x /usr/local/bin/vaydns-server 2>/dev/null || true
 fi
+# --- badvpn udpgw (fix UDPGW/badvpn :7300) ---
+if [[ ! -x /usr/local/bin/udpgw ]]; then
+    for _UDPGW_URL in \
+        "https://raw.githubusercontent.com/Midas-XYZ/tunnel/main/udpgw" \
+        "https://raw.githubusercontent.com/http-custom/badvpn/main/badvpn-udpgw" \
+        "https://raw.githubusercontent.com/Laikoinc/Storefile/main/udpgw"; do
+        wget -qO /usr/local/bin/udpgw "$_UDPGW_URL" 2>/dev/null && \
+        file /usr/local/bin/udpgw 2>/dev/null | grep -q ELF && break
+        rm -f /usr/local/bin/udpgw
+    done
+    chmod +x /usr/local/bin/udpgw 2>/dev/null || true
+fi
+# legacy name: dnstt-server → vaydns-server (kompatibilitas lama)
+[[ -x /usr/local/bin/vaydns-server ]] && ln -sf /usr/local/bin/vaydns-server /usr/local/bin/dnstt-server
 # --- udp-custom ---
 if [[ ! -x /usr/local/bin/udp-custom ]]; then
     UC_URL="https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
@@ -8245,7 +8263,7 @@ systemctl disable systemd-resolved 2>/dev/null || true
 printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
 # --- generate key dnstt (sekali saja) ---
 if [[ ! -f /etc/slowdns/server.pub && -x /usr/local/bin/dnstt-server ]]; then
-    /usr/local/bin/dnstt-server -gen-key \
+    /usr/local/bin/vaydns-server -gen-key \
         -privkey-file /etc/slowdns/server.key \
         -pubkey-file /etc/slowdns/server.pub >/dev/null 2>&1 || true
     chmod 600 /etc/slowdns/server.key 2>/dev/null || true
@@ -8266,7 +8284,7 @@ Description=SlowDNS dnstt Server
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/dnstt-server -udp :5300 -privkey-file /etc/slowdns/server.key ns.${DOMAIN} 127.0.0.1:90
+ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns.${DOMAIN} -upstream 127.0.0.1:90 -record-type txt
 Restart=on-failure
 RestartSec=3
 
@@ -8288,6 +8306,23 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 UCSVCEOF
+# --- udpgw.service (badvpn UDP gateway :7300, fix UDPGW/badvpn) ---
+if [[ -x /usr/local/bin/udpgw ]]; then
+cat > /etc/systemd/system/udpgw.service <<UDPGWSVCEOF
+[Unit]
+Description=BadVPN UDP Gateway (udpgw) port 7300
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/udpgw --listen-addr 0.0.0.0:7300 --max-clients 200 --max-connections-for-client 6 --udp-mtu 65507
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UDPGWSVCEOF
+fi
 # --- iptables NAT rules (urut agar 5300 & 53 aman dari catch-all) ---
 cat > /etc/iptables/apply-slowdns-udp.sh <<IPTEOF
 #!/bin/bash
@@ -8314,7 +8349,7 @@ ExecStart=/etc/iptables/apply-slowdns-udp.sh
 WantedBy=multi-user.target
 IPTSVC
 systemctl daemon-reload
-systemctl enable --now slowdns udp-custom iptables-restore >/dev/null 2>&1 || true
+systemctl enable --now slowdns udp-custom udpgw iptables-restore >/dev/null 2>&1 || true
 
 ufw allow 22/tcp >/dev/null 2>&1 || true
 ufw allow 53/udp >/dev/null 2>&1 || true
@@ -8337,6 +8372,7 @@ ufw allow 5300/udp >/dev/null 2>&1 || true
 ufw allow 5300/tcp >/dev/null 2>&1 || true
 ufw allow 36712/udp >/dev/null 2>&1 || true
 ufw allow 7100:7600/tcp >/dev/null 2>&1 || true
+ufw allow 7300/tcp >/dev/null 2>&1 || true
 ufw allow 9080/tcp >/dev/null 2>&1 || true
 ufw allow 9088/tcp >/dev/null 2>&1 || true
 ufw --force enable >/dev/null 2>&1 || true
@@ -8360,7 +8396,7 @@ for srv in xray dropbear nginx vpn-ws-bridge vpn-proto-daemons vpn-telegram-bot;
     printf " %-24s : %s\n" "$srv" "$st"
 done
 echo "-----------------------------------------------------------------------"
-echo " SlowDNS dnstt  : UDP/TCP 53 (dnstt-server)"
+echo " SlowDNS VayDNS  : UDP/TCP 53 (vaydns multi-record: TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA)"
 echo " UDP-Custom      : UDP 36712 (udp-custom)"
 echo " PUB KEY        : $(cat /etc/vpn-bot/id_ed25519.pub 2>/dev/null || echo '-')"
 echo "========================================================================"
@@ -8997,13 +9033,31 @@ echo "[6/6b] Memasang SlowDNS (dnstt) & UDP-Custom..."
 ARCH_X=$(uname -m)
 case "$ARCH_X" in x86_64) XARCH="amd64";; aarch64|arm64) XARCH="arm64";; *) XARCH="amd64";; esac
 mkdir -p /etc/slowdns /etc/udp /etc/iptables
-# --- dnstt-server ---
-if [[ ! -x /usr/local/bin/dnstt-server ]]; then
-    wget -qO /usr/local/bin/dnstt-server \
-        "https://github.com/net2share/dnstt/releases/download/latest/dnstt-server-linux-${XARCH}" \
+VAYDNS_BASE="https://raw.githubusercontent.com/sunekugg/tunelv2/main/bin"
+# --- vaydns-server (mod VayDNS: multi-record TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA) ---
+if [[ ! -x /usr/local/bin/vaydns-server ]]; then
+    wget -qO /usr/local/bin/vaydns-server \\
+        "${VAYDNS_BASE}/vaydns-server-linux-${XARCH}" \\
+        2>/dev/null || \\
+    wget -qO /usr/local/bin/vaydns-server \\
+        "https://github.com/net2share/vaydns/releases/download/v0.2.8/vaydns-server-linux-${XARCH}" \\
         2>/dev/null || true
-    chmod +x /usr/local/bin/dnstt-server 2>/dev/null || true
+    chmod +x /usr/local/bin/vaydns-server 2>/dev/null || true
 fi
+# --- badvpn udpgw (fix UDPGW/badvpn :7300) ---
+if [[ ! -x /usr/local/bin/udpgw ]]; then
+    for _UDPGW_URL in \
+        "https://raw.githubusercontent.com/Midas-XYZ/tunnel/main/udpgw" \
+        "https://raw.githubusercontent.com/http-custom/badvpn/main/badvpn-udpgw" \
+        "https://raw.githubusercontent.com/Laikoinc/Storefile/main/udpgw"; do
+        wget -qO /usr/local/bin/udpgw "$_UDPGW_URL" 2>/dev/null && \
+        file /usr/local/bin/udpgw 2>/dev/null | grep -q ELF && break
+        rm -f /usr/local/bin/udpgw
+    done
+    chmod +x /usr/local/bin/udpgw 2>/dev/null || true
+fi
+# legacy name: dnstt-server → vaydns-server (kompatibilitas lama)
+[[ -x /usr/local/bin/vaydns-server ]] && ln -sf /usr/local/bin/vaydns-server /usr/local/bin/dnstt-server
 # --- udp-custom ---
 if [[ ! -x /usr/local/bin/udp-custom ]]; then
     UC_URL="https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
@@ -9019,7 +9073,7 @@ systemctl disable systemd-resolved 2>/dev/null || true
 printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
 # --- generate key dnstt (sekali saja) ---
 if [[ ! -f /etc/slowdns/server.pub && -x /usr/local/bin/dnstt-server ]]; then
-    /usr/local/bin/dnstt-server -gen-key \
+    /usr/local/bin/vaydns-server -gen-key \
         -privkey-file /etc/slowdns/server.key \
         -pubkey-file /etc/slowdns/server.pub >/dev/null 2>&1 || true
     chmod 600 /etc/slowdns/server.key 2>/dev/null || true
@@ -9040,7 +9094,7 @@ Description=SlowDNS dnstt Server
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/dnstt-server -udp :5300 -privkey-file /etc/slowdns/server.key ns.${DOMAIN} 127.0.0.1:90
+ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns.${DOMAIN} -upstream 127.0.0.1:90 -record-type txt
 Restart=on-failure
 RestartSec=3
 
@@ -9062,6 +9116,23 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 UCSVCEOF
+# --- udpgw.service (badvpn UDP gateway :7300, fix UDPGW/badvpn) ---
+if [[ -x /usr/local/bin/udpgw ]]; then
+cat > /etc/systemd/system/udpgw.service <<UDPGWSVCEOF
+[Unit]
+Description=BadVPN UDP Gateway (udpgw) port 7300
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/udpgw --listen-addr 0.0.0.0:7300 --max-clients 200 --max-connections-for-client 6 --udp-mtu 65507
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UDPGWSVCEOF
+fi
 # --- iptables NAT rules (urut agar 5300 & 53 aman dari catch-all) ---
 cat > /etc/iptables/apply-slowdns-udp.sh <<IPTEOF
 #!/bin/bash
@@ -9088,7 +9159,7 @@ ExecStart=/etc/iptables/apply-slowdns-udp.sh
 WantedBy=multi-user.target
 IPTSVC
 systemctl daemon-reload
-systemctl enable --now slowdns udp-custom iptables-restore >/dev/null 2>&1 || true
+systemctl enable --now slowdns udp-custom udpgw iptables-restore >/dev/null 2>&1 || true
 
 ufw allow 22/tcp >/dev/null 2>&1 || true
 ufw allow 53/udp >/dev/null 2>&1 || true
@@ -9111,6 +9182,7 @@ ufw allow 5300/udp >/dev/null 2>&1 || true
 ufw allow 5300/tcp >/dev/null 2>&1 || true
 ufw allow 36712/udp >/dev/null 2>&1 || true
 ufw allow 7100:7600/tcp >/dev/null 2>&1 || true
+ufw allow 7300/tcp >/dev/null 2>&1 || true
 ufw allow 9080/tcp >/dev/null 2>&1 || true
 ufw allow 9088/tcp >/dev/null 2>&1 || true
 ufw --force enable >/dev/null 2>&1 || true
@@ -9134,7 +9206,7 @@ for srv in xray dropbear nginx vpn-ws-bridge vpn-proto-daemons vpn-telegram-bot;
     printf " %-24s : %s\n" "$srv" "$st"
 done
 echo "-----------------------------------------------------------------------"
-echo " SlowDNS dnstt  : UDP/TCP 53 (dnstt-server)"
+echo " SlowDNS VayDNS  : UDP/TCP 53 (vaydns multi-record: TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA)"
 echo " UDP-Custom      : UDP 36712 (udp-custom)"
 echo " PUB KEY        : $(cat /etc/vpn-bot/id_ed25519.pub 2>/dev/null || echo '-')"
 echo "========================================================================"
