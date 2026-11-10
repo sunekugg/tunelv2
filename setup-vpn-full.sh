@@ -482,9 +482,53 @@ DROPBEAR_LOG = "/var/log/dropbear.log"
 WS_MAP_LOG = "/var/log/vpn-ws-map.log"
 ACTIVE_BRIDGE_JSON = "/var/log/vpn-bot/active_bridge.json"
 STATE_FILE = "/var/log/vpn-bot/session_state.json"
+LOCKED_PASSWORD = "LOCKED_MULTI_LOGIN_STATE"
+
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
+_SAFE_SECRET = re.compile(r"^[^'\"\\`$;&|<>\n\r\t]{1,128}$")
+_SAFE_DOMAIN = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
+
+
+def safe_username(name: str) -> str:
+    """Validasi username Linux/Xray. Raise ValueError bila mengandung karakter shell."""
+    if not isinstance(name, str) or not _SAFE_NAME.match(name):
+        raise ValueError(f"Username tidak valid: {name!r}")
+    return name
+
+
+def safe_secret(secret: str) -> str:
+    """Validasi password/UUID sebelum masuk shell. Tanpa quote/apostrophe/backtick."""
+    if not isinstance(secret, str) or not _SAFE_SECRET.match(secret):
+        raise ValueError("Password/UUID mengandung karakter yang tidak diizinkan.")
+    return secret
+
+
+def safe_domain(domain: str) -> str:
+    """Validasi domain/FQDN sebelum masuk certbot/openssl/sed."""
+    if not isinstance(domain, str) or not _SAFE_DOMAIN.match(domain) or ".." in domain:
+        raise ValueError(f"Domain tidak valid: {domain!r}")
+    return domain
+
+
+def sh_quote(value: str) -> str:
+    """Quote aman untuk disuntik di dalam single-quote shell: 'foo' -> 'foo'\''foo'."""
+    return "'" + str(value).replace("'", "'\\''") + "'"
+
 
 def run_cmd(cmd):
     return subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def run_argv(argv, timeout=None):
+    """Jalankan perintah TANPA shell — aman untuk username/password dari input user."""
+    try:
+        return subprocess.run(argv, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+    except Exception as e:
+        class _R:
+            returncode = 1
+            stdout = ""
+            stderr = str(e)
+        return _R()
 
 def load_xray_config():
     with open(XRAY_CONFIG, "r") as f:
@@ -499,7 +543,8 @@ def save_and_reload_xray(cfg):
     return True, "OK"
 
 def kill_ssh_sessions(username):
-    run_cmd(f"pkill -9 -u {username} 2>/dev/null")
+    safe_username(username)
+    run_argv(["pkill", "-9", "-u", username])
     if os.path.exists(DROPBEAR_LOG):
         out = run_cmd(f"grep -F \"for '{username}'\" {DROPBEAR_LOG} | tail -n 100").stdout
         pids = set()
@@ -508,14 +553,18 @@ def kill_ssh_sessions(username):
             if m:
                 pids.add(m.group(1))
         for pid in pids:
+            if not pid.isdigit():
+                continue
             cmdline = run_cmd(f"ps -p {pid} -o comm=").stdout.strip()
             if "dropbear" in cmdline:
-                run_cmd(f"kill -9 {pid} 2>/dev/null")
+                run_argv(["kill", "-9", pid])
 
 def create_ssh_user(username, password, exp_date_str):
+    safe_username(username)
+    safe_secret(password)
     kill_ssh_sessions(username)
-    run_cmd(f"userdel -f {username} 2>/dev/null")
-    res = run_cmd(f"useradd -e {exp_date_str} -s /bin/false -M {username}")
+    run_argv(["userdel", "-f", username])
+    res = run_argv(["useradd", "-e", exp_date_str, "-s", "/bin/false", "-M", username])
     if res.returncode != 0:
         return False
     p = subprocess.Popen(["chpasswd", "-c", "SHA512"], stdin=subprocess.PIPE, text=True)
@@ -526,6 +575,8 @@ def create_ssh_user(username, password, exp_date_str):
 
 
 def add_xray_user(proto, username, uuid_str):
+    safe_username(username)
+    safe_secret(uuid_str)
     cfg = load_xray_config()
     for ib in cfg.get("inbounds", []):
         if ib.get("protocol") == proto:
@@ -541,6 +592,7 @@ def add_xray_user(proto, username, uuid_str):
     return save_and_reload_xray(cfg)
 
 def remove_xray_user(proto, username):
+    safe_username(username)
     cfg = load_xray_config()
     changed = False
     for ib in cfg.get("inbounds", []):
@@ -1316,28 +1368,40 @@ def parse_external_vpn_link(link_str: str):
     raise ValueError("Format link tidak didukung. Gunakan vmess://, vless://, atau trojan://")
 
 def apply_server_speed(srv_row, mbps: int):
+    # PENTING: wondershaper/tc bekerja per-interface, bukan per-user.
+    # VPS lokal berbagi interface dgn limit global (apply_global_speed_limit) —
+    # set per-server lokal hanya menimpa global, jadi kita tolak dgn pesan jelas.
     if srv_row["is_local"] == 1:
-        iface = get_default_iface()
-        if mbps > 0 and iface:
-            run_cmd(f"wondershaper -a {iface} -d {mbps*1024} -u {mbps*1024}")
-        elif iface:
-            run_cmd(f"wondershaper -c -a {iface}")
-        return True, "Speed limit diterapkan di VPS Lokal."
-    else:
-        import paramiko
-        try:
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(srv_row["host"], port=srv_row["ssh_port"], username=srv_row["ssh_user"], password=srv_row["ssh_pass"], timeout=10)
-            cmd = (
-                "IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}'); "
-                + (f"wondershaper -a $IFACE -d {mbps*1024} -u {mbps*1024}" if mbps > 0 else "wondershaper -c -a $IFACE")
-            )
-            ssh.exec_command(cmd)
-            ssh.close()
-            return True, "Speed limit diterapkan di VPS Remote."
-        except Exception as e:
-            return False, str(e)
+        g = get_int_setting_safe("default_speed_mbps", 0)
+        return False, (
+            f"VPS Lokal memakai Speed Global ({g if g > 0 else 'Unlimited'} Mbps). "
+            "Set limit ini di menu Pengaturan → default_speed_mbps. "
+            "Limit per-server hanya berlaku untuk VPS Remote (interface terpisah)."
+        )
+    import paramiko
+    try:
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(srv_row["host"], port=srv_row["ssh_port"], username=srv_row["ssh_user"], password=srv_row["ssh_pass"], timeout=10)
+        cmd = (
+            "IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}'); "
+            + (f"wondershaper -a $IFACE -d {mbps*1024} -u {mbps*1024}" if mbps > 0 else "wondershaper -c -a $IFACE")
+        )
+        ssh.exec_command(cmd)
+        ssh.close()
+        return True, f"Speed limit {mbps if mbps > 0 else 'Unlimited'} Mbps diterapkan di VPS Remote."
+    except Exception as e:
+        return False, str(e)
+
+
+def get_int_setting_safe(key: str, default: int = 0) -> int:
+    try:
+        conn = sqlite3.connect("/etc/vpn-bot/vpn_data.db")
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        conn.close()
+        return int(row[0]) if row and row[0] not in (None, "") else default
+    except Exception:
+        return default
 
 def apply_global_speed_limit(mbps: int):
     iface = get_default_iface()
@@ -1513,16 +1577,20 @@ def connect_remote_ssh(srv_row, temp_pass: str = None, timeout: int = 12):
     raise RuntimeError("Kunci SSH belum terhubung. Silakan klik tombol '✏️ Edit Login' lalu masukkan Password Root.")
 
 def create_remote_account(srv_row, proto: str, uname: str, secret: str, exp_ssh_date: str):
+    safe_username(uname)
+    safe_secret(secret)
     ssh = connect_remote_ssh(srv_row, timeout=10)
     if proto == "ssh":
-        cmd = f"userdel -f {uname} 2>/dev/null; useradd -e {exp_ssh_date} -s /bin/false -M {uname} && echo '{uname}:{secret}' | chpasswd -c SHA512"
+        q = sh_quote
+        cmd = f"userdel -f {q(uname)} 2>/dev/null; useradd -e {exp_ssh_date} -s /bin/false -M {q(uname)} && echo {q(uname + ':' + secret)} | chpasswd -c SHA512"
         exec_ssh_sync(ssh, cmd, timeout=10)
     else:
-        cmd = f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.add_xray_user('{proto}','{uname}','{secret}')\""
+        cmd = f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.add_xray_user({sh_quote(proto)},{sh_quote(uname)},{sh_quote(secret)})\""
         exec_ssh_sync(ssh, cmd, timeout=10)
     ssh.close()
 
 def remove_account_from_server(srv_row, proto: str, uname: str):
+    safe_username(uname)
     if not srv_row or srv_row["is_local"] == 1:
         if proto == "ssh":
             delete_ssh_user(uname)
@@ -1532,9 +1600,9 @@ def remove_account_from_server(srv_row, proto: str, uname: str):
     try:
         ssh = connect_remote_ssh(srv_row, timeout=10)
         if proto == "ssh":
-            exec_ssh_sync(ssh, f"pkill -9 -u {uname} 2>/dev/null; userdel -f {uname} 2>/dev/null", timeout=10)
+            exec_ssh_sync(ssh, f"pkill -9 -u {sh_quote(uname)} 2>/dev/null; userdel -f {sh_quote(uname)} 2>/dev/null", timeout=10)
         else:
-            exec_ssh_sync(ssh, f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.remove_xray_user('{proto}','{uname}')\"", timeout=10)
+            exec_ssh_sync(ssh, f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.remove_xray_user({sh_quote(proto)},{sh_quote(uname)})\"", timeout=10)
         ssh.close()
         return True
     except Exception:
@@ -1785,6 +1853,10 @@ def get_remote_dashboard_stats(srv_row):
 # --- FITUR V11: CHANGE DOMAIN, PRO BUG SCANNER & AUTO-HEAL ---
 def change_server_domain(srv_row, new_domain: str):
     new_domain = new_domain.strip().replace("http://", "").replace("https://", "").split("/")[0]
+    try:
+        safe_domain(new_domain)
+    except ValueError as e:
+        return False, str(e)
     if not new_domain:
         return False, "Domain baru tidak boleh kosong."
 
@@ -2216,8 +2288,9 @@ def _lookup_db_secret(username: str) -> str:
 
 
 def delete_ssh_user(username: str):
+    safe_username(username)
     kill_active_ssh_pids(username)
-    run_cmd(f"userdel -f {username} 2>/dev/null || true")
+    run_argv(["userdel", "-f", username])
     return True
 
 
@@ -2405,15 +2478,19 @@ def _get_acc_info_from_db(username: str):
         return None, None
 
 def sync_ssh_password_local(username: str, password: str):
+    safe_username(username)
+    safe_secret(password)
     cmd = (
         f"id -u '{username}' >/dev/null 2>&1 || useradd -s /bin/false -M '{username}' 2>/dev/null || true; "
         f"sed -i 's/^{username}:!\\+/{username}:/' /etc/shadow 2>/dev/null || true; "
         f"usermod -U '{username}' 2>/dev/null || true; "
         f"passwd -u '{username}' 2>/dev/null || true; "
-        f"chage -E -1 '{username}' 2>/dev/null || true; "
-        f"echo '{username}:{password}' | chpasswd -c SHA512 2>/dev/null || echo '{username}:{password}' | chpasswd 2>/dev/null || true"
+        f"chage -E -1 '{username}' 2>/dev/null || true"
     )
     run_cmd(cmd)
+    # Password dikirim via stdin chpasswd (bukan echo) agar tak bocor ke shell
+    p = subprocess.Popen(["chpasswd", "-c", "SHA512"], stdin=subprocess.PIPE, text=True)
+    p.communicate(f"{username}:{password}\n")
 
 def lock_ssh_user(username: str, lock: bool = True, secret: str = None):
     acc, srv = _get_acc_info_from_db(username)
@@ -2422,7 +2499,9 @@ def lock_ssh_user(username: str, lock: bool = True, secret: str = None):
         return set_remote_or_local_lock(srv, "ssh", username, pwd, lock=lock)
 
     if lock:
-        run_cmd(f"echo '{username}:LOCKED_MULTI_LOGIN_STATE' | chpasswd -c SHA512 2>/dev/null || usermod -L '{username}' 2>/dev/null || true")
+        safe_username(username)
+        p = subprocess.Popen(["chpasswd", "-c", "SHA512"], stdin=subprocess.PIPE, text=True)
+        p.communicate(f"{username}:{LOCKED_PASSWORD}\n")
         kill_active_ssh_pids(username)
     else:
         if pwd:
@@ -2433,14 +2512,17 @@ def unlock_ssh_user(username: str, secret: str = None):
     return lock_ssh_user(username, lock=False, secret=secret)
 
 def set_remote_or_local_lock(srv_row, proto: str, uname: str, secret: str = None, lock: bool = True):
+    safe_username(uname)
     acc, db_srv = _get_acc_info_from_db(uname)
     target_srv = srv_row or db_srv
     pwd = secret or (acc["secret"] if acc else "")
 
     if not target_srv or target_srv["is_local"] == 1:
         if proto == "ssh":
+            safe_username(uname)
             if lock:
-                run_cmd(f"echo '{uname}:LOCKED_MULTI_LOGIN_STATE' | chpasswd -c SHA512 2>/dev/null || usermod -L '{uname}' 2>/dev/null || true")
+                p = subprocess.Popen(["chpasswd", "-c", "SHA512"], stdin=subprocess.PIPE, text=True)
+                p.communicate(f"{uname}:{LOCKED_PASSWORD}\n")
                 kill_active_ssh_pids(uname)
             else:
                 sync_ssh_password_local(uname, pwd)
@@ -2455,10 +2537,11 @@ def set_remote_or_local_lock(srv_row, proto: str, uname: str, secret: str = None
     try:
         ssh = connect_remote_ssh(target_srv, timeout=12)
         if proto == "ssh":
+            safe_username(uname)
             if lock:
                 remote_lock_cmd = (
-                    f"echo '{uname}:LOCKED_MULTI_LOGIN_STATE' | chpasswd -c SHA512 2>/dev/null || usermod -L '{uname}' 2>/dev/null || true; "
-                    f"pids=$(grep -F \"Password auth succeeded for '{uname}'\" /var/log/dropbear.log 2>/dev/null "
+                    f"echo {sh_quote(uname + ':' + LOCKED_PASSWORD)} | chpasswd -c SHA512 2>/dev/null || usermod -L {sh_quote(uname)} 2>/dev/null || true; "
+                    f"pids=$(grep -F \"Password auth succeeded for {sh_quote(uname)}\" /var/log/dropbear.log 2>/dev/null "
                     "| grep -oE '\\[[0-9]+\\]' | tr -d '[]' | sort -u); "
                     "for pid in $pids; do "
                     "  if [ -d \"/proc/$pid\" ] && grep -qi 'dropbear' \"/proc/$pid/comm\" 2>/dev/null; then "
@@ -2466,27 +2549,30 @@ def set_remote_or_local_lock(srv_row, proto: str, uname: str, secret: str = None
                     "  fi; "
                     "done; "
                     f"pkill -9 -f \"sshd: {uname}\" 2>/dev/null || true; "
-                    f"pkill -9 -u \"{uname}\" 2>/dev/null || true"
+                    f"pkill -9 -u {sh_quote(uname)} 2>/dev/null || true"
                 )
                 exec_ssh_sync(ssh, remote_lock_cmd, timeout=10)
             else:
+                safe_secret(pwd)
                 remote_sync_cmd = (
-                    f"id -u '{uname}' >/dev/null 2>&1 || useradd -s /bin/false -M '{uname}' 2>/dev/null || true; "
+                    f"id -u {sh_quote(uname)} >/dev/null 2>&1 || useradd -s /bin/false -M {sh_quote(uname)} 2>/dev/null || true; "
                     f"sed -i 's/^{uname}:!\\+/{uname}:/' /etc/shadow 2>/dev/null || true; "
-                    f"usermod -U '{uname}' 2>/dev/null || true; "
-                    f"passwd -u '{uname}' 2>/dev/null || true; "
-                    f"chage -E -1 '{uname}' 2>/dev/null || true; "
-                    f"echo '{uname}:{pwd}' | chpasswd -c SHA512 2>/dev/null || echo '{uname}:{pwd}' | chpasswd 2>/dev/null || true"
+                    f"usermod -U {sh_quote(uname)} 2>/dev/null || true; "
+                    f"passwd -u {sh_quote(uname)} 2>/dev/null || true; "
+                    f"chage -E -1 {sh_quote(uname)} 2>/dev/null || true"
                 )
                 exec_ssh_sync(ssh, remote_sync_cmd, timeout=10)
+                p = subprocess.Popen(["chpasswd", "-c", "SHA512"], stdin=subprocess.PIPE, text=True)
+                p.communicate(f"{uname}:{pwd}\n")
         else:
             if lock:
-                exec_ssh_sync(ssh, f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.remove_xray_user('{proto}','{uname}')\"", timeout=10)
+                exec_ssh_sync(ssh, f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.remove_xray_user({sh_quote(proto)},{sh_quote(uname)})\"", timeout=10)
             else:
+                safe_secret(pwd)
                 exec_ssh_sync(
                     ssh,
                     f"sed -i '/{uname}/d' /var/log/xray/access.log 2>/dev/null || true; "
-                    f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.add_xray_user('{proto}','{uname}','{pwd}')\"",
+                    f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.add_xray_user({sh_quote(proto)},{sh_quote(uname)},{sh_quote(pwd)})\"",
                     timeout=10
                 )
         ssh.close()
@@ -3813,6 +3899,9 @@ async def cb_copy_fallback(cb: CallbackQuery):
         if not acc:
             await cb.answer("Akun tidak ditemukan.", show_alert=True)
             return
+        if cb.from_user.id != ADMIN_ID and acc["user_id"] != cb.from_user.id:
+            await cb.answer("Akses ditolak.", show_alert=True)
+            return
         srv = conn.execute("SELECT * FROM servers WHERE id=?", (acc["server_id"],)).fetchone()
     host, uname, secret = srv["host"], acc["username"], acc["secret"]
     val = secret
@@ -3982,11 +4071,29 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
             await asyncio.to_thread(engine.create_remote_account, srv, proto, uname, secret, exp_ssh_date)
 
         with db_conn() as conn:
-            cur = conn.execute(
-                """INSERT INTO accounts (user_id, server_id, protocol, username, secret, ip_limit, quota_gb, speed_mbps, created_at, expired_at, is_trial)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (user_id, srv["id"], proto, uname, secret, ip_limit, quota_gb, speed_mbps, now, exp_ts, is_trial)
-            )
+            try:
+                cur = conn.execute(
+                    """INSERT INTO accounts (user_id, server_id, protocol, username, secret, ip_limit, quota_gb, speed_mbps, created_at, expired_at, is_trial)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (user_id, srv["id"], proto, uname, secret, ip_limit, quota_gb, speed_mbps, now, exp_ts, is_trial)
+                )
+            except sqlite3.IntegrityError:
+                # Race: username sudah diambil proses lain (kolom username UNIQUE).
+                conn.rollback()
+                try:
+                    engine.remove_account_from_server(srv, proto, uname)
+                except Exception:
+                    pass
+                log_activity("CREATE_ACCOUNT_FAILED", f"{proto.upper()} {uname} gagal: username sudah dipakai (race)")
+                fail_txt = f"❌ Gagal membuat akun: username <code>{html.escape(mask_str(uname))}</code> sudah dipakai. Silakan coba lagi dengan nama lain."
+                if edit_mode:
+                    try:
+                        await msg_obj.edit_text(fail_txt, parse_mode="HTML")
+                    except Exception:
+                        await msg_obj.answer(fail_txt, parse_mode="HTML")
+                else:
+                    await msg_obj.answer(fail_txt, parse_mode="HTML")
+                return
             acc_id = cur.lastrowid
             conn.execute("INSERT INTO create_history (user_id, username, protocol, is_trial, created_at) VALUES (?, ?, ?, ?, ?)", (user_id, uname, proto, is_trial, now))
             conn.commit()
@@ -4115,9 +4222,9 @@ async def cb_svc_act(cb: CallbackQuery):
     elif act == "nginx": engine.run_cmd("systemctl restart nginx")
     elif act == "dropbear": engine.run_cmd("systemctl restart dropbear")
     elif act == "ssh_ws": engine.run_cmd("systemctl restart ssh vpn-ws-bridge vpn-proto-daemons")
-    elif act == "all": engine.run_cmd("systemctl restart dropbear ssh xray vpn-ws-bridge vpn-proto-daemons nginx")
+    elif act == "all": await asyncio.to_thread(engine.run_cmd, "systemctl restart dropbear ssh xray vpn-ws-bridge vpn-proto-daemons nginx")
     elif act == "renew_ssl":
-        engine.run_cmd(f"certbot renew --force-renewal >/dev/null 2>&1 && cp -f /etc/letsencrypt/live/{DEFAULT_DOMAIN}/fullchain.pem /etc/xray/certs/fullchain.pem && cp -f /etc/letsencrypt/live/{DEFAULT_DOMAIN}/privkey.pem /etc/xray/certs/privkey.pem && systemctl restart nginx xray")
+        await asyncio.to_thread(engine.run_cmd, f"certbot renew --force-renewal >/dev/null 2>&1 && cp -f /etc/letsencrypt/live/{DEFAULT_DOMAIN}/fullchain.pem /etc/xray/certs/fullchain.pem && cp -f /etc/letsencrypt/live/{DEFAULT_DOMAIN}/privkey.pem /etc/xray/certs/privkey.pem && systemctl restart nginx xray")
     await cb.answer("✅ Berhasil dijalankan!", show_alert=True)
     await cb_adm_ssl_services(cb)
 
@@ -4823,7 +4930,7 @@ async def cb_edit_banner(cb: CallbackQuery, state: FSMContext):
 @router.message(FormState.admin_edit_banner)
 async def msg_save_banner(msg: Message, state: FSMContext):
     with open("/etc/issue.net", "w") as f: f.write(msg.text)
-    engine.run_cmd("systemctl restart dropbear && systemctl restart ssh")
+    await asyncio.to_thread(engine.run_cmd, "systemctl restart dropbear && systemctl restart ssh")
     await state.clear()
     await msg.answer("✅ Banner HTML diperbarui.", reply_markup=admin_menu_kb())
 
