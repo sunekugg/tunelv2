@@ -720,14 +720,14 @@ def format_ssh_html(host, user, passwd, bug_host="bug.com", ip_limit=2, exp_str=
     h = html.escape
     # Baca public key SlowDNS + NS domain dari server (fallback "-" bila belum terpasang)
     slowdns_pubkey = "-"
-    slowdns_ns = f"ns.{host}"
+    slowdns_ns = f"ns-{host}"
     try:
         with open("/etc/vpn-bot/config.env") as _f:
             for _ln in _f:
                 if _ln.startswith("DOMAIN="):
                     _dom = _ln.split("=", 1)[1].strip().strip('"')
                     if _dom:
-                        slowdns_ns = f"ns.{_dom}"
+                        slowdns_ns = f"ns-{_dom}"
     except Exception:
         pass
     try:
@@ -4370,7 +4370,7 @@ async def cb_sd_regenservice(cb: CallbackQuery):
         unit = (
             "[Unit]\nDescription=SlowDNS dnstt Server\nAfter=network.target\n\n"
             "[Service]\n"
-            f"ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns.{dom} -upstream 127.0.0.1:90 -record-type txt\n"
+            f"ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-{dom} -upstream 127.0.0.1:90 -record-type txt\n"
             "Restart=on-failure\nRestartSec=3\n\n"
             "[Install]\nWantedBy=multi-user.target\n"
         )
@@ -4380,7 +4380,7 @@ async def cb_sd_regenservice(cb: CallbackQuery):
         os.system("systemctl restart slowdns")
         return dom
     dom = await asyncio.to_thread(_regen)
-    await cb.answer(f"✅ slowdns.service di-regenerate untuk ns.{dom} & di-restart.", show_alert=False)
+    await cb.answer(f"✅ slowdns.service di-regenerate untuk ns-{dom} & di-restart.", show_alert=False)
 
 @router.callback_query(F.data.startswith("svc_act:"))
 async def cb_svc_act(cb: CallbackQuery):
@@ -8284,7 +8284,7 @@ Description=SlowDNS dnstt Server
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns.${DOMAIN} -upstream 127.0.0.1:90 -record-type txt
+ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-${DOMAIN} -upstream 127.0.0.1:90 -record-type txt
 Restart=on-failure
 RestartSec=3
 
@@ -9094,7 +9094,7 @@ Description=SlowDNS dnstt Server
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns.${DOMAIN} -upstream 127.0.0.1:90 -record-type txt
+ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-${DOMAIN} -upstream 127.0.0.1:90 -record-type txt
 Restart=on-failure
 RestartSec=3
 
