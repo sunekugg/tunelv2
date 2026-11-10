@@ -151,6 +151,14 @@ PORT_BW_FILE = "/var/log/vpn-port-bw.json"
 PORT_BYTES_MEM = {}
 LAST_BW_FLUSH = 0.0
 
+
+def atomic_write_json(path, data):
+    """Tulis JSON secara atomik: proses mati di tengah tak akan menyisakan file korup."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
 XRAY_ROUTES = {
     "/vmess": 10001,
     "/upvmess": 10003,
@@ -177,8 +185,7 @@ def add_port_bytes(lport: int, nbytes: int):
     if now - LAST_BW_FLUSH >= 3.0:
         LAST_BW_FLUSH = now
         try:
-            with open(PORT_BW_FILE, "w") as f:
-                json.dump(PORT_BYTES_MEM, f)
+            atomic_write_json(PORT_BW_FILE, PORT_BYTES_MEM)
         except Exception:
             pass
 
@@ -195,7 +202,7 @@ def generate_sub_response(clean_path: str) -> bytes:
     uname = clean_path.split("/sub/", 1)[1].strip("/")
     if not uname or not os.path.exists("/etc/vpn-bot/vpn_data.db"):
         return b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found"
-    conn = sqlite3.connect("/etc/vpn-bot/vpn_data.db")
+    conn = sqlite3.connect("/etc/vpn-bot/vpn_data.db", timeout=15)
     conn.row_factory = sqlite3.Row
     acc = conn.execute("SELECT * FROM accounts WHERE username=?", (uname,)).fetchone()
     if not acc:
@@ -482,6 +489,7 @@ chmod +x /etc/vpn-bot/proto-daemons.py 2>/dev/null || true
 cat << 'EOF_EMBED_FILE' > /etc/vpn-bot/vpn_engine.py
 #!/usr/bin/env python3
 import base64
+import calendar
 import html
 import json
 import os
@@ -527,6 +535,14 @@ def safe_domain(domain: str) -> str:
 def sh_quote(value: str) -> str:
     """Quote aman untuk disuntik di dalam single-quote shell: 'foo' -> 'foo'\''foo'."""
     return "'" + str(value).replace("'", "'\\''") + "'"
+
+
+def atomic_write_json(path, data):
+    """Tulis JSON secara atomik: proses mati di tengah tak akan menyisakan file korup."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
 
 
 def run_cmd(cmd):
@@ -902,9 +918,13 @@ def scan_active_sessions():
         if fsize < last_pos:
             last_pos = 0
         try:
-            with open(XRAY_ACCESS_LOG, "r", errors="ignore") as f:
+            with open(XRAY_ACCESS_LOG, "rb") as f:
                 f.seek(last_pos)
-                for line in f:
+                for raw in f:
+                    try:
+                        line = raw.decode("utf-8", errors="ignore")
+                    except Exception:
+                        continue
                     if "accepted" not in line or "email:" not in line:
                         continue
                     m = re.search(r"from\s+(?:tcp:|udp:)?(\S+)\s+accepted\s+.*?\bemail:\s*(\S+)", line)
@@ -1011,8 +1031,7 @@ def scan_active_sessions():
             info["last_ip"] = real_ip
 
     try:
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f)
+        atomic_write_json(STATE_FILE, state)
     except Exception:
         pass
 
@@ -1410,7 +1429,7 @@ def apply_server_speed(srv_row, mbps: int):
 
 def get_int_setting_safe(key: str, default: int = 0) -> int:
     try:
-        conn = sqlite3.connect("/etc/vpn-bot/vpn_data.db")
+        conn = sqlite3.connect("/etc/vpn-bot/vpn_data.db", timeout=15)
         row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
         conn.close()
         return int(row[0]) if row and row[0] not in (None, "") else default
@@ -2292,7 +2311,7 @@ def kill_active_ssh_pids(username: str):
 def _lookup_db_secret(username: str) -> str:
     try:
         import sqlite3
-        conn = sqlite3.connect("/etc/vpn-bot/vpn_data.db")
+        conn = sqlite3.connect("/etc/vpn-bot/vpn_data.db", timeout=15)
         row = conn.execute("SELECT secret FROM accounts WHERE username=?", (username,)).fetchone()
         conn.close()
         return row[0] if row and row[0] else ""
@@ -2438,7 +2457,7 @@ def get_active_sessions() -> dict:
                 is_recent = True
                 if m_dt:
                     try:
-                        l_ts = int(time.mktime(time.strptime(m_dt.group(1), "%Y/%m/%d %H:%M:%S")))
+                        l_ts = int(calendar.timegm(time.strptime(m_dt.group(1), "%Y/%m/%d %H:%M:%S")))
                         if l_ts < cutoff_ts:
                             is_recent = False
                     except Exception:
@@ -2479,7 +2498,7 @@ def get_active_sessions() -> dict:
 def _get_acc_info_from_db(username: str):
     try:
         import sqlite3
-        conn = sqlite3.connect("/etc/vpn-bot/vpn_data.db")
+        conn = sqlite3.connect("/etc/vpn-bot/vpn_data.db", timeout=15)
         conn.row_factory = sqlite3.Row
         acc = conn.execute("SELECT * FROM accounts WHERE username=?", (username,)).fetchone()
         if not acc:
@@ -2665,8 +2684,7 @@ def _update_and_get_user_bw(port_user_map: dict) -> dict:
         store["port_last"] = {k: store["port_last"][k] for k in keys_to_keep}
 
     try:
-        with open(USER_BW_STORE, "w") as f:
-            json.dump(store, f)
+        atomic_write_json(USER_BW_STORE, store)
     except Exception:
         pass
 
@@ -2811,7 +2829,7 @@ def get_detailed_login_data_local() -> dict:
                 if m_dt:
                     log_hms = m_dt.group(2)
                     try:
-                        l_ts = int(time.mktime(time.strptime(m_dt.group(1), "%Y/%m/%d %H:%M:%S")))
+                        l_ts = int(calendar.timegm(time.strptime(m_dt.group(1), "%Y/%m/%d %H:%M:%S")))
                         if l_ts < cutoff_ts:
                             is_recent = False
                     except Exception:
@@ -2990,7 +3008,7 @@ def resequence_servers_db():
         conn.commit()
 
 def db_conn():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -7971,6 +7989,7 @@ After=network.target
 
 [Service]
 User=root
+Environment=TZ=UTC
 ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
 Restart=always
 RestartSec=1
@@ -8235,6 +8254,7 @@ Description=Xray Service
 After=network.target
 [Service]
 User=root
+Environment=TZ=UTC
 ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
 Restart=always
 RestartSec=2
@@ -8603,6 +8623,7 @@ After=network.target
 
 [Service]
 User=root
+Environment=TZ=UTC
 ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
 Restart=always
 RestartSec=1
