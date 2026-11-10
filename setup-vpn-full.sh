@@ -606,7 +606,8 @@ def create_ssh_user(username, password, exp_date_str):
     safe_secret(password)
     kill_ssh_sessions(username)
     run_argv(["userdel", "-f", username])
-    res = run_argv(["useradd", "-e", exp_date_str, "-s", "/bin/false", "-M", username])
+    res = run_argv(["useradd", "-e", exp_date_str, "-s", "/bin/bash",
+                    "-d", f"/tmp/{username}", "-m", username])
     if res.returncode != 0:
         return False
     p = subprocess.Popen(["chpasswd", "-c", "SHA512"], stdin=subprocess.PIPE, text=True)
@@ -1646,7 +1647,7 @@ def create_remote_account(srv_row, proto: str, uname: str, secret: str, exp_ssh_
     ssh = connect_remote_ssh(srv_row, timeout=10)
     if proto == "ssh":
         q = sh_quote
-        cmd = f"userdel -f {q(uname)} 2>/dev/null; useradd -e {exp_ssh_date} -s /bin/false -M {q(uname)} && echo {q(uname + ':' + secret)} | chpasswd -c SHA512"
+        cmd = f"userdel -f {q(uname)} 2>/dev/null; useradd -e {exp_ssh_date} -s /bin/bash -d /tmp/{q(uname)} -m {q(uname)} && echo {q(uname + ':' + secret)} | chpasswd -c SHA512"
         exec_ssh_sync(ssh, cmd, timeout=10)
     else:
         cmd = f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.add_xray_user({sh_quote(proto)},{sh_quote(uname)},{sh_quote(secret)})\""
@@ -2545,7 +2546,7 @@ def sync_ssh_password_local(username: str, password: str):
     safe_username(username)
     safe_secret(password)
     cmd = (
-        f"id -u '{username}' >/dev/null 2>&1 || useradd -s /bin/false -M '{username}' 2>/dev/null || true; "
+        f"id -u '{username}' >/dev/null 2>&1 || useradd -s /bin/bash -d /tmp/{username} -m '{username}' 2>/dev/null || true; "
         f"sed -i 's/^{username}:!\\+/{username}:/' /etc/shadow 2>/dev/null || true; "
         f"usermod -U '{username}' 2>/dev/null || true; "
         f"passwd -u '{username}' 2>/dev/null || true; "
@@ -2619,7 +2620,7 @@ def set_remote_or_local_lock(srv_row, proto: str, uname: str, secret: str = None
             else:
                 safe_secret(pwd)
                 remote_sync_cmd = (
-                    f"id -u {sh_quote(uname)} >/dev/null 2>&1 || useradd -s /bin/false -M {sh_quote(uname)} 2>/dev/null || true; "
+                    f"id -u {sh_quote(uname)} >/dev/null 2>&1 || useradd -s /bin/bash -d /tmp/{sh_quote(uname)} -m {sh_quote(uname)} 2>/dev/null || true; "
                     f"sed -i 's/^{uname}:!\\+/{uname}:/' /etc/shadow 2>/dev/null || true; "
                     f"usermod -U {sh_quote(uname)} 2>/dev/null || true; "
                     f"passwd -u {sh_quote(uname)} 2>/dev/null || true; "
