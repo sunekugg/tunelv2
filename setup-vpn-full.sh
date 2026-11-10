@@ -4191,23 +4191,27 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
                 u_tag = f"@{tg_user.username}" if tg_user.username else "-"
                 tipe_lbl = "🐒 Trial" if is_trial else "🦆 Reguler"
                 srv_isp = srv["isp"] if ("isp" in srv.keys() and srv["isp"]) else DEFAULT_ISP
+                exp_wib = datetime.fromtimestamp(exp_ts).strftime("%Y-%m-%d %H:%M") + " WIB" if isinstance(exp_ts, (int, float)) else html.escape(exp_display)
                 grp_msg = (
-                    "✨ <b>AKUN BARU DIBUAT</b> ✨\n"
-                    "────────────────────────────\n"
+                    "♻️ <b>AKUN BERHASIL DIBUAT</b> ♻️\n"
+                    "❀ ━━━━━━━━━━━━━━━ ❀\n"
                     f"👤 <b>Pemilik</b>  : {html.escape(tg_user.first_name or 'User')} ({html.escape(u_tag)})\n"
                     f"🆔 <b>User ID</b>  : <code>{user_id}</code>\n"
                     f"⚡ <b>Protokol</b> : <b>{proto.upper()}</b> ({tipe_lbl})\n"
                     f"🔑 <b>Username</b> : <code>{html.escape(mask_str(uname))}</code>\n"
                     f"🌐 <b>Server</b>   : <code>{html.escape(srv['host'])}</code>\n"
                     f"🏢 <b>ISP</b>      : {html.escape(srv_isp)}\n"
-                    f"⏳ <b>Expired</b>  : <b>{html.escape(exp_display)}</b>\n"
-                    "────────────────────────────\n"
-                    f"🤖 <b>Buat Akun Gratis:</b> <a href=\"{bot_link}\">@{html.escape(bot_uname)}</a>"
+                    f"⏳ <b>Expired</b>  : <b>{exp_wib}</b>\n"
+                    "❀ ━━━━━━━━━━━━━━━ ❀"
                 )
+                kb_grp = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="🤖 Buat Akun Gratis", callback_data="back_home")
+                ]])
                 kwargs = {
                     "chat_id": int(grp_id),
                     "text": grp_msg,
                     "parse_mode": "HTML",
+                    "reply_markup": kb_grp,
                     "disable_web_page_preview": True
                 }
                 if c_topic > 0:
@@ -5131,10 +5135,12 @@ async def msg_admin_set_val(msg: Message, state: FSMContext):
     val = "" if raw_val == "-" else raw_val
     numeric_keys = {
         "lock_duration_min": (5, 1), "lock_strikes": (1, 1), "default_days": (7, 1),
-        "trial_minutes": (30, 1), "default_ip_limit": (2, 1), "default_quota_gb": (50, 0),
+        "trial_minutes": (30, 1), "default_ip_limit": (2, 0), "default_quota_gb": (50, 0),
         "default_speed_mbps": (0, 0), "max_users_per_vps": (100, 1),
         "user_create_max": (1, 0), "user_create_days": (3, 1), "trial_create_max": (3, 0),
     }
+    if key in numeric_keys and val.strip().lower() in ("unlimited", "unl", "inf", "∞"):
+        val = "0"
     if key in numeric_keys:
         def_v, min_v = numeric_keys[key]
         m = re.search(r"-?\d+", val)
