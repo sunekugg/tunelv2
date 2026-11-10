@@ -204,13 +204,15 @@ def generate_sub_response(clean_path: str) -> bytes:
         return b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found"
     conn = sqlite3.connect("/etc/vpn-bot/vpn_data.db", timeout=15)
     conn.row_factory = sqlite3.Row
-    acc = conn.execute("SELECT * FROM accounts WHERE username=?", (uname,)).fetchone()
-    if not acc:
+    try:
+        acc = conn.execute("SELECT * FROM accounts WHERE username=?", (uname,)).fetchone()
+        if not acc:
+            return b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found"
+        srv = conn.execute("SELECT * FROM servers WHERE id=?", (acc["server_id"],)).fetchone() or conn.execute("SELECT * FROM servers LIMIT 1").fetchone()
+        def_bug_row = conn.execute("SELECT value FROM settings WHERE key='bug_host'").fetchone()
+    finally:
+        # tutup koneksi di SEMUA jalur agar tak bocor saat query gagal
         conn.close()
-        return b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found"
-    srv = conn.execute("SELECT * FROM servers WHERE id=?", (acc["server_id"],)).fetchone() or conn.execute("SELECT * FROM servers LIMIT 1").fetchone()
-    def_bug_row = conn.execute("SELECT value FROM settings WHERE key='bug_host'").fetchone()
-    conn.close()
 
     domain = srv["host"]
     secret = acc["secret"]
@@ -443,9 +445,14 @@ async def forward_stream(reader, writer, target_port, is_ohp=False):
 class DNSForwarderProtocol(asyncio.DatagramProtocol):
     def connection_made(self, transport):
         self.transport = transport
+        # simpan referensi task agar tak di-GC sebelum selesai (pitfall asyncio terdokumentasi)
+        self._tasks = set()
 
     def datagram_received(self, data, addr):
-        asyncio.create_task(self.handle_dns(data, addr))
+        task = asyncio.create_task(self.handle_dns(data, addr))
+        # buang dari set begitu selesai agar set tak tumbuh tanpa batas
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def handle_dns(self, data, client_addr):
         loop = asyncio.get_running_loop()
@@ -455,11 +462,16 @@ class DNSForwarderProtocol(asyncio.DatagramProtocol):
                 def datagram_received(self, d, a):
                     if not on_reply.done():
                         on_reply.set_result(d)
-            t, _ = await loop.create_datagram_endpoint(UpstreamProto, remote_addr=("1.1.1.1", 53))
-            t.sendto(data)
-            reply = await asyncio.wait_for(on_reply, timeout=3.0)
-            self.transport.sendto(reply, client_addr)
-            t.close()
+            t = None
+            try:
+                t, _ = await loop.create_datagram_endpoint(UpstreamProto, remote_addr=("1.1.1.1", 53))
+                t.sendto(data)
+                reply = await asyncio.wait_for(on_reply, timeout=3.0)
+                self.transport.sendto(reply, client_addr)
+            finally:
+                # tutup socket upstream di SEMUA jalur (termasuk timeout) agar tak bocor FD
+                if t is not None:
+                    t.close()
         except Exception:
             pass
 
@@ -7761,9 +7773,12 @@ with open("/etc/vpn-bot/config.env", "r") as f:
             k, v = line.strip().split("=", 1)
             ENV_CONFIG[k.strip()] = v.strip().strip('"')
 
-BOT_TOKEN = ENV_CONFIG["BOT_TOKEN"]
-ADMIN_ID = ENV_CONFIG["ADMIN_ID"]
-CURRENT_DOMAIN = ENV_CONFIG["DOMAIN"]
+BOT_TOKEN = ENV_CONFIG.get("BOT_TOKEN", "")
+ADMIN_ID = ENV_CONFIG.get("ADMIN_ID", "")
+CURRENT_DOMAIN = ENV_CONFIG.get("DOMAIN", "")
+if not BOT_TOKEN or not ADMIN_ID:
+    print("config.env tidak lengkap (BOT_TOKEN/ADMIN_ID hilang) — backup dibatalkan.", file=sys.stderr)
+    sys.exit(1)
 FULL_SCRIPT_PATH = "/root/setup-vpn-full.sh"
 
 def read_clean(path):
@@ -7907,6 +7922,7 @@ grep -q "^/bin/false$" /etc/shells || echo "/bin/false" >> /etc/shells
 sed -i '/^Port /d' /etc/ssh/sshd_config
 sed -i '/^Banner /d' /etc/ssh/sshd_config
 echo -e "Port 22\\nPort 444\\nBanner /etc/issue.net\\nPermitRootLogin yes\\nPasswordAuthentication yes\\nPubkeyAuthentication yes" >> /etc/ssh/sshd_config
+systemctl disable --now ssh.socket 2>/dev/null || true
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 
 cd /tmp && rm -rf dropbear-2019.78*
@@ -8131,11 +8147,28 @@ if __name__ == "__main__":
     note = sys.argv[1] if len(sys.argv) > 1 else "Portable Full Installer"
     build_portable_installer()
     ts_str = time.strftime("%Y-%m-%d %H:%M:%S WIB")
-    subprocess.run([
-        "curl", "-s", "-X", "POST", f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument",
-        "-F", f"chat_id={ADMIN_ID}", "-F", f"document=@{FULL_SCRIPT_PATH}",
-        "-F", f"caption=📜 Full Script Portable (setup-vpn-full.sh)\n✅ Support Ubuntu <=24.04 & Debian <=13 (Semua Spek VPS)\n✅ Tanpa Token/Admin/Domain (Siap Paste di VPS Baru)\n🕒 {ts_str}\n📌 {note}"
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    caption = f"📜 Full Script Portable (setup-vpn-full.sh)\n✅ Support Ubuntu <=24.04 & Debian <=13 (Semua Spek VPS)\n✅ Tanpa Token/Admin/Domain (Siap Paste di VPS Baru)\n🕒 {ts_str}\n📌 {note}"
+    ok_sent = False
+    for attempt in range(3):
+        try:
+            res = subprocess.run(
+                ["curl", "-s", "--max-time", "120", "-X", "POST",
+                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument",
+                 "-F", f"chat_id={ADMIN_ID}", "-F", f"document=@{FULL_SCRIPT_PATH}",
+                 "-F", f"caption={caption}"],
+                capture_output=True, text=True, timeout=150)
+            body = (res.stdout or "").strip()
+            # Telegram balas {"ok":true,...}; kalau bukan, catat & coba lagi
+            if '"ok":true' in body.replace(" ", ""):
+                ok_sent = True
+                break
+            print(f"Kirim backup gagal (percobaan {attempt+1}): {body[:200]}", file=sys.stderr)
+        except Exception as e:
+            print(f"Kirim backup error (percobaan {attempt+1}): {e}", file=sys.stderr)
+        time.sleep(3 * (attempt + 1))
+    if not ok_sent:
+        print("Backup GAGAL terkirim ke Telegram setelah 3 percobaan.", file=sys.stderr)
+        sys.exit(1)
 
 
 EOF_EMBED_FILE
@@ -8191,11 +8224,28 @@ iptables -P INPUT ACCEPT 2>/dev/null || true
 iptables -P FORWARD ACCEPT 2>/dev/null || true
 iptables -P OUTPUT ACCEPT 2>/dev/null || true
 
+# Aktifkan firewall remote (WAJIB allow port SSH master dulu agar tak lockout)
+ufw allow 22/tcp  >/dev/null 2>&1 || true
+ufw allow 444/tcp >/dev/null 2>&1 || true
+ufw allow 90/tcp  >/dev/null 2>&1 || true
+ufw allow 80/tcp  >/dev/null 2>&1 || true
+ufw allow 443/tcp >/dev/null 2>&1 || true
+ufw allow 8443/tcp >/dev/null 2>&1 || true
+ufw allow 9080/tcp >/dev/null 2>&1 || true
+ufw allow 9088/tcp >/dev/null 2>&1 || true
+ufw allow 25000/udp >/dev/null 2>&1 || true
+ufw allow 5300/udp >/dev/null 2>&1 || true
+ufw allow 36712/udp >/dev/null 2>&1 || true
+ufw --force enable >/dev/null 2>&1 || true
+
 # 5. Konfigurasi OpenSSH & Dropbear 2019.78
 grep -q "^/bin/false$" /etc/shells || echo "/bin/false" >> /etc/shells
 sed -i '/^Port /d' /etc/ssh/sshd_config
 sed -i '/^Banner /d' /etc/ssh/sshd_config
 printf "Port 22\nPort 444\nBanner /etc/issue.net\nPermitRootLogin yes\nPasswordAuthentication yes\nPubkeyAuthentication yes\n" >> /etc/ssh/sshd_config
+# Ubuntu 23.10+/24.04 pakai socket activation yang hard-bind :22 & abaikan "Port".
+# Matikan socket activation agar Port 444 dari sshd_config benar-benar aktif.
+systemctl disable --now ssh.socket 2>/dev/null || true
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 
 systemctl stop dropbear >/dev/null 2>&1 || true
@@ -8240,10 +8290,16 @@ fi
 if [[ ! -x /usr/local/bin/xray ]]; then
     ARCH_R=$(uname -m)
     if [[ "$ARCH_R" == "x86_64" ]]; then AR="64"; else AR="arm64-v8a"; fi
-    wget -qO /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${AR}.zip" || true
+    XRAY_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${AR}.zip"
+    wget -qO /tmp/xray.zip "$XRAY_URL" || wget -qO /tmp/xray.zip "https://ghproxy.com/$XRAY_URL" || true
     python3 -m zipfile -e /tmp/xray.zip /usr/local/bin/ 2>/dev/null || unzip -qo /tmp/xray.zip -d /usr/local/bin/ 2>/dev/null || true
     chmod +x /usr/local/bin/xray 2>/dev/null || true
     rm -f /tmp/xray.zip
+fi
+if [[ ! -x /usr/local/bin/xray ]]; then
+    echo "GAGAL: Xray tidak tersedia (unduh GitHub/ghproxy gagal & xray.bin tidak di-upload master)."
+    echo "INSTALL_FAIL"
+    exit 1
 fi
 touch /var/log/xray/access.log /var/log/xray/error.log
 chmod 666 /var/log/xray/*.log
@@ -8541,6 +8597,7 @@ grep -q "^/bin/false$" /etc/shells || echo "/bin/false" >> /etc/shells
 sed -i '/^Port /d' /etc/ssh/sshd_config
 sed -i '/^Banner /d' /etc/ssh/sshd_config
 echo -e "Port 22\nPort 444\nBanner /etc/issue.net\nPermitRootLogin yes\nPasswordAuthentication yes\nPubkeyAuthentication yes" >> /etc/ssh/sshd_config
+systemctl disable --now ssh.socket 2>/dev/null || true
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 
 cd /tmp && rm -rf dropbear-2019.78*
