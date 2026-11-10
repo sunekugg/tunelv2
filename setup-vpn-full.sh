@@ -38,6 +38,20 @@ ln -sf /usr/share/zoneinfo/Asia/Jakarta /etc/localtime
 
 ARCH_RAW=$(uname -m)
 if [[ "$ARCH_RAW" == "x86_64" ]]; then ARCH="64"; else ARCH="arm64-v8a"; fi
+
+# Unduh Xray dengan fallback multi-mirror (GitHub kadang terblokir di VPS ID)
+fetch_xray() {
+    local arch="$1" url tmp="/tmp/xray.zip"
+    url="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${arch}.zip"
+    rm -f "$tmp"
+    if wget -q --timeout=60 -O "$tmp" "$url"; then return 0; fi
+    if wget -q --timeout=90 -O "$tmp" "https://ghproxy.com/$url"; then return 0; fi
+    if [[ -f /root/xray-linux-${arch}.zip ]]; then
+        cp -f "/root/xray-linux-${arch}.zip" "$tmp"; return 0
+    fi
+    return 1
+}
+
 VIRT_TYPE=$(systemd-detect-virt 2>/dev/null || echo "kvm")
 
 # Buat Auto-Swap 1 GB di awal agar VPS RAM 512MB tidak pernah stuck/freeze
@@ -7795,6 +7809,20 @@ ln -sf /usr/share/zoneinfo/Asia/Jakarta /etc/localtime
 
 ARCH_RAW=$(uname -m)
 if [[ "$ARCH_RAW" == "x86_64" ]]; then ARCH="64"; else ARCH="arm64-v8a"; fi
+
+# Unduh Xray dengan fallback multi-mirror (GitHub kadang terblokir di VPS ID)
+fetch_xray() {
+    local arch="$1" url tmp="/tmp/xray.zip"
+    url="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${arch}.zip"
+    rm -f "$tmp"
+    if wget -q --timeout=60 -O "$tmp" "$url"; then return 0; fi
+    if wget -q --timeout=90 -O "$tmp" "https://ghproxy.com/$url"; then return 0; fi
+    if [[ -f /root/xray-linux-${arch}.zip ]]; then
+        cp -f "/root/xray-linux-${arch}.zip" "$tmp"; return 0
+    fi
+    return 1
+}
+
 VIRT_TYPE=$(systemd-detect-virt 2>/dev/null || echo "kvm")
 
 # Buat Auto-Swap 1 GB di awal agar VPS RAM 512MB tidak pernah stuck/freeze
@@ -7904,7 +7932,11 @@ EODBSVC
 
 # 4. Instalasi Xray-Core & Sertifikat SSL
 echo "[4/6] Memasang Xray-Core & Sertifikat SSL..."
-wget -qO /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${ARCH}.zip"
+if ! fetch_xray "$ARCH"; then
+    echo "GAGAL: Tidak bisa mengunduh Xray dari semua sumber."
+    echo "Solusi: upload manual binary ke /root/xray-linux-${ARCH}.zip lalu jalankan ulang."
+    exit 1
+fi
 unzip -qo /tmp/xray.zip -d /usr/local/bin/ && chmod +x /usr/local/bin/xray && rm -f /tmp/xray.zip
 touch /var/log/xray/access.log /var/log/xray/error.log && chmod 666 /var/log/xray/*.log
 
@@ -8532,7 +8564,11 @@ EODBSVC
 
 # 4. Instalasi Xray-Core & Sertifikat SSL
 echo "[4/6] Memasang Xray-Core & Sertifikat SSL..."
-wget -qO /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${ARCH}.zip"
+if ! fetch_xray "$ARCH"; then
+    echo "GAGAL: Tidak bisa mengunduh Xray dari semua sumber."
+    echo "Solusi: upload manual binary ke /root/xray-linux-${ARCH}.zip lalu jalankan ulang."
+    exit 1
+fi
 unzip -qo /tmp/xray.zip -d /usr/local/bin/ && chmod +x /usr/local/bin/xray && rm -f /tmp/xray.zip
 touch /var/log/xray/access.log /var/log/xray/error.log && chmod 666 /var/log/xray/*.log
 
