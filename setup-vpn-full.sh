@@ -484,7 +484,7 @@ async def main():
         except Exception:
             pass
     loop = asyncio.get_running_loop()
-    for up in (53, 5300, 25000, 36712):
+    for up in (5300, 25000):
         try:
             await loop.create_datagram_endpoint(lambda: DNSForwarderProtocol(), local_addr=("0.0.0.0", up))
         except Exception:
@@ -718,6 +718,23 @@ def make_vmess_b64(remarks, host, port, uuid_str, net, path, tls_val):
 
 def format_ssh_html(host, user, passwd, bug_host="bug.com", ip_limit=2, exp_str="-"):
     h = html.escape
+    # Baca public key SlowDNS + NS domain dari server (fallback "-" bila belum terpasang)
+    slowdns_pubkey = "-"
+    slowdns_ns = f"ns.{host}"
+    try:
+        with open("/etc/slowdns/server.pub") as _f:
+            slowdns_pubkey = h(_f.read().strip())
+    except Exception:
+        pass
+    try:
+        with open("/etc/vpn-bot/config.env") as _f:
+            for _ln in _f:
+                if _ln.startswith("DOMAIN="):
+                    _dom = _ln.split("=", 1)[1].strip().strip('"')
+                    if _dom:
+                        slowdns_ns = f"ns.{_dom}"
+    except Exception:
+        pass
     top_box = (
         "————————————————————————————————————\n"
         "            SSH/Dropbear\n"
@@ -740,6 +757,8 @@ def format_ssh_html(host, user, passwd, bug_host="bug.com", ip_limit=2, exp_str=
         "Dropbear      : 90\n"
         "SlowDNS       : 53,5300\n"
         "UDP-Custom    : 1-65535\n"
+        f"NS SlowDNS    : {h(slowdns_ns)}\n"
+        f"PUBLIC KEY    : {slowdns_pubkey}\n"
         "OHP + SSH     : 9080\n"
         "Squid Proxy   : 3128\n"
         "BadVPN UDPGW  : 7100-7600\n"
@@ -3759,6 +3778,9 @@ def admin_menu_kb():
             InlineKeyboardButton(text="⚙️ Durasi, Kuota & Limit Buat", callback_data="adm_limits_cfg")
         ],
         [
+            InlineKeyboardButton(text="🌐 SlowDNS & UDP-Custom", callback_data="adm_slowdns_udp")
+        ],
+        [
             InlineKeyboardButton(text="🖥 Kelola Multi-VPS", callback_data="adm_vps"),
             InlineKeyboardButton(text="🌍 Relay Multi-Negara", callback_data="adm_relays")
         ],
@@ -4256,6 +4278,109 @@ async def cb_adm_ssl_services(cb: CallbackQuery):
         [InlineKeyboardButton(text="⬅️ Kembali ke Panel Admin", callback_data="admin_home")]
     ])
     await safe_edit_Basic(cb, txt, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(F.data == "adm_slowdns_udp")
+async def cb_adm_slowdns_udp(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        return
+    def _slowdns_info():
+        pub = "-"
+        try:
+            with open("/etc/slowdns/server.pub") as f:
+                pub = f.read().strip()
+        except Exception:
+            pass
+        return pub
+    pub = await asyncio.to_thread(_slowdns_info)
+    def _stat(name):
+        return engine.run_cmd(f"systemctl is-active {name}").strip() or "dead"
+    s_sd = await asyncio.to_thread(_stat, "slowdns")
+    s_uc = await asyncio.to_thread(_stat, "udp-custom")
+    txt = (
+        "<b>MANAJEMEN SlowDNS & UDP-Custom</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>SlowDNS (dnstt)</b>  : {s_sd}\n"
+        f"• <b>UDP-Custom</b>       : {s_uc}\n"
+        f"• <b>NS</b>              : <code>ns.{html.escape(DEFAULT_DOMAIN)}</code>\n"
+        f"• <b>SlowDNS Port</b>    : <code>53, 5300</code>\n"
+        f"• <b>UDP-Custom</b>      : <code>1-65535</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>PUBLIC KEY</b>:\n<code>{html.escape(pub)}</code>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔑 Generate Public Key Baru", callback_data="sd_act:regen")],
+        [InlineKeyboardButton(text="🌐 Regenerate Unit NS (Domain Baru)", callback_data="sd_act:regen_ns")],
+        [InlineKeyboardButton(text="🔁 Restart SlowDNS", callback_data="sd_act:restart_sd")],
+        [InlineKeyboardButton(text="🔁 Restart UDP-Custom", callback_data="sd_act:restart_uc")],
+        [InlineKeyboardButton(text="🧹 Reset iptables & Restart Semua", callback_data="sd_act:restart_all")],
+        [InlineKeyboardButton(text="⬅️ Kembali ke Panel Admin", callback_data="admin_home")]
+    ])
+    await safe_edit_Basic(cb, txt, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(F.data == "sd_act:regen")
+async def cb_sd_regen(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        return
+    await cb.answer("🔑 Generate key baru...", show_alert=False)
+    def _regen():
+        import os as _os
+        _os.system("rm -f /etc/slowdns/server.key /etc/slowdns/server.pub")
+        _os.system("/usr/local/bin/dnstt-server -gen-key -privkey-file /etc/slowdns/server.key -pubkey-file /etc/slowdns/server.pub")
+        _os.system("chmod 600 /etc/slowdns/server.key")
+        _os.system("systemctl restart slowdns")
+        pub = "-"
+        try:
+            with open("/etc/slowdns/server.pub") as f:
+                pub = f.read().strip()
+        except Exception:
+            pass
+        return pub
+    pub = await asyncio.to_thread(_regen)
+    await cb.answer(f"✅ Public key baru dibuat & slowdns di-restart.", show_alert=False)
+    # Re-render menu dengan key baru
+    fake_cb = cb
+    await cb_adm_slowdns_udp(fake_cb)
+
+@router.callback_query(F.data.in_({"sd_act:restart_sd", "sd_act:restart_uc", "sd_act:restart_all"}))
+async def cb_sd_restart(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        return
+    act = cb.data.split(":")[1]
+    def _do():
+        if act == "restart_sd":
+            engine.run_cmd("systemctl restart slowdns")
+            msg = "🔁 slowdns di-restart."
+        elif act == "restart_uc":
+            engine.run_cmd("systemctl restart udp-custom")
+            msg = "🔁 udp-custom di-restart."
+        else:
+            engine.run_cmd("/etc/iptables/apply-slowdns-udp.sh")
+            engine.run_cmd("systemctl restart slowdns udp-custom iptables-restore")
+            msg = "🧹 iptables di-reset & slowdns+udp-custom+iptables-restore di-restart."
+        return msg
+    msg = await asyncio.to_thread(_do)
+    await cb.answer(msg, show_alert=False)
+
+@router.callback_query(F.data == "sd_act:regen_ns")
+async def cb_sd_regenservice(cb: CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        return
+    def _regen():
+        # Regenerate slowdns.service dari DOMAIN terkini di config.env, lalu restart
+        dom = DEFAULT_DOMAIN
+        unit = (
+            "[Unit]\nDescription=SlowDNS dnstt Server\nAfter=network.target\n\n"
+            "[Service]\n"
+            f"ExecStart=/usr/local/bin/dnstt-server -udp :5300 -privkey-file /etc/slowdns/server.key ns.{dom} 127.0.0.1:90\n"
+            "Restart=on-failure\nRestartSec=3\n\n"
+            "[Install]\nWantedBy=multi-user.target\n"
+        )
+        with open("/etc/systemd/system/slowdns.service", "w") as f:
+            f.write(unit)
+        os.system("systemctl daemon-reload")
+        os.system("systemctl restart slowdns")
+        return dom
+    dom = await asyncio.to_thread(_regen)
+    await cb.answer(f"✅ slowdns.service di-regenerate untuk ns.{dom} & di-restart.", show_alert=False)
 
 @router.callback_query(F.data.startswith("svc_act:"))
 async def cb_svc_act(cb: CallbackQuery):
@@ -8093,6 +8218,104 @@ IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
 systemctl enable --now vnstat >/dev/null 2>&1 || true
 vnstat --add -i "$IFACE" >/dev/null 2>&1 || true
 
+# ===== SlowDNS (dnstt) + UDP-Custom auto-install =====
+echo "[6/6b] Memasang SlowDNS (dnstt) & UDP-Custom..."
+ARCH_X=$(uname -m)
+case "$ARCH_X" in x86_64) XARCH="amd64";; aarch64|arm64) XARCH="arm64";; *) XARCH="amd64";; esac
+mkdir -p /etc/slowdns /etc/udp /etc/iptables
+# --- dnstt-server ---
+if [[ ! -x /usr/local/bin/dnstt-server ]]; then
+    wget -qO /usr/local/bin/dnstt-server \
+        "https://github.com/net2share/dnstt/releases/download/latest/dnstt-server-linux-${XARCH}" \
+        2>/dev/null || true
+    chmod +x /usr/local/bin/dnstt-server 2>/dev/null || true
+fi
+# --- udp-custom ---
+if [[ ! -x /usr/local/bin/udp-custom ]]; then
+    UC_URL="https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
+    if [[ "$XARCH" == "arm64" ]]; then
+        UC_URL="https://raw.githubusercontent.com/fisabiliyusri/Mantap/main/udp-custom/udp-custom-linux-arm"
+    fi
+    wget -qO /usr/local/bin/udp-custom "$UC_URL" 2>/dev/null || true
+    chmod +x /usr/local/bin/udp-custom 2>/dev/null || true
+fi
+# --- systemd-resolved: matikan agar :53 bebas ---
+systemctl stop systemd-resolved 2>/dev/null || true
+systemctl disable systemd-resolved 2>/dev/null || true
+printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
+# --- generate key dnstt (sekali saja) ---
+if [[ ! -f /etc/slowdns/server.pub && -x /usr/local/bin/dnstt-server ]]; then
+    /usr/local/bin/dnstt-server -gen-key \
+        -privkey-file /etc/slowdns/server.key \
+        -pubkey-file /etc/slowdns/server.pub >/dev/null 2>&1 || true
+    chmod 600 /etc/slowdns/server.key 2>/dev/null || true
+fi
+# --- config udp-custom ---
+cat > /etc/udp/config.json <<'UDPJSON'
+{
+  "listen": ":36712",
+  "stream_buffer": 33554432,
+  "receive_buffer": 83886080,
+  "auth": { "mode": "passwords" }
+}
+UDPJSON
+# --- slowdns.service (dnstt bind :5300, target dropbear :90) ---
+cat > /etc/systemd/system/slowdns.service <<SDSVCEOF
+[Unit]
+Description=SlowDNS dnstt Server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/dnstt-server -udp :5300 -privkey-file /etc/slowdns/server.key ns.${DOMAIN} 127.0.0.1:90
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+SDSVCEOF
+# --- udp-custom.service ---
+cat > /etc/systemd/system/udp-custom.service <<UCSVCEOF
+[Unit]
+Description=UDP Custom (HTTP Custom)
+After=network.target
+
+[Service]
+WorkingDirectory=/etc/udp
+ExecStart=/usr/local/bin/udp-custom server -exclude 53,5300
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UCSVCEOF
+# --- iptables NAT rules (urut agar 5300 & 53 aman dari catch-all) ---
+cat > /etc/iptables/apply-slowdns-udp.sh <<IPTEOF
+#!/bin/bash
+IFACE=\$(ip route get 8.8.8.8 2>/dev/null | awk '{print \$5; exit}')
+[[ -z "\$IFACE" ]] && IFACE="eth0"
+iptables -t nat -F PREROUTING
+iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 5300 -j ACCEPT
+iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 53 -j REDIRECT --to-ports 5300
+iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 1:65535 -j REDIRECT --to-ports 36712
+iptables-save > /etc/iptables/rules.v4
+IPTEOF
+chmod +x /etc/iptables/apply-slowdns-udp.sh
+/etc/iptables/apply-slowdns-udp.sh
+cat > /etc/systemd/system/iptables-restore.service <<IPTSVC
+[Unit]
+Description=Restore iptables NAT rules
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/etc/iptables/apply-slowdns-udp.sh
+
+[Install]
+WantedBy=multi-user.target
+IPTSVC
+systemctl daemon-reload
+systemctl enable --now slowdns udp-custom iptables-restore >/dev/null 2>&1 || true
+
 ufw allow 22/tcp >/dev/null 2>&1 || true
 ufw allow 53/udp >/dev/null 2>&1 || true
 ufw allow 53/tcp >/dev/null 2>&1 || true
@@ -8137,7 +8360,8 @@ for srv in xray dropbear nginx vpn-ws-bridge vpn-proto-daemons vpn-telegram-bot;
     printf " %-24s : %s\n" "$srv" "$st"
 done
 echo "-----------------------------------------------------------------------"
-echo " SlowDNS        : UDP/TCP 53, 5300, 25000, 36712"
+echo " SlowDNS dnstt  : UDP/TCP 53 (dnstt-server)"
+echo " UDP-Custom      : UDP 36712 (udp-custom)"
 echo " PUB KEY        : $(cat /etc/vpn-bot/id_ed25519.pub 2>/dev/null || echo '-')"
 echo "========================================================================"
 """)
@@ -8768,6 +8992,104 @@ IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
 systemctl enable --now vnstat >/dev/null 2>&1 || true
 vnstat --add -i "$IFACE" >/dev/null 2>&1 || true
 
+# ===== SlowDNS (dnstt) + UDP-Custom auto-install =====
+echo "[6/6b] Memasang SlowDNS (dnstt) & UDP-Custom..."
+ARCH_X=$(uname -m)
+case "$ARCH_X" in x86_64) XARCH="amd64";; aarch64|arm64) XARCH="arm64";; *) XARCH="amd64";; esac
+mkdir -p /etc/slowdns /etc/udp /etc/iptables
+# --- dnstt-server ---
+if [[ ! -x /usr/local/bin/dnstt-server ]]; then
+    wget -qO /usr/local/bin/dnstt-server \
+        "https://github.com/net2share/dnstt/releases/download/latest/dnstt-server-linux-${XARCH}" \
+        2>/dev/null || true
+    chmod +x /usr/local/bin/dnstt-server 2>/dev/null || true
+fi
+# --- udp-custom ---
+if [[ ! -x /usr/local/bin/udp-custom ]]; then
+    UC_URL="https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
+    if [[ "$XARCH" == "arm64" ]]; then
+        UC_URL="https://raw.githubusercontent.com/fisabiliyusri/Mantap/main/udp-custom/udp-custom-linux-arm"
+    fi
+    wget -qO /usr/local/bin/udp-custom "$UC_URL" 2>/dev/null || true
+    chmod +x /usr/local/bin/udp-custom 2>/dev/null || true
+fi
+# --- systemd-resolved: matikan agar :53 bebas ---
+systemctl stop systemd-resolved 2>/dev/null || true
+systemctl disable systemd-resolved 2>/dev/null || true
+printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
+# --- generate key dnstt (sekali saja) ---
+if [[ ! -f /etc/slowdns/server.pub && -x /usr/local/bin/dnstt-server ]]; then
+    /usr/local/bin/dnstt-server -gen-key \
+        -privkey-file /etc/slowdns/server.key \
+        -pubkey-file /etc/slowdns/server.pub >/dev/null 2>&1 || true
+    chmod 600 /etc/slowdns/server.key 2>/dev/null || true
+fi
+# --- config udp-custom ---
+cat > /etc/udp/config.json <<'UDPJSON'
+{
+  "listen": ":36712",
+  "stream_buffer": 33554432,
+  "receive_buffer": 83886080,
+  "auth": { "mode": "passwords" }
+}
+UDPJSON
+# --- slowdns.service (dnstt bind :5300, target dropbear :90) ---
+cat > /etc/systemd/system/slowdns.service <<SDSVCEOF
+[Unit]
+Description=SlowDNS dnstt Server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/dnstt-server -udp :5300 -privkey-file /etc/slowdns/server.key ns.${DOMAIN} 127.0.0.1:90
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+SDSVCEOF
+# --- udp-custom.service ---
+cat > /etc/systemd/system/udp-custom.service <<UCSVCEOF
+[Unit]
+Description=UDP Custom (HTTP Custom)
+After=network.target
+
+[Service]
+WorkingDirectory=/etc/udp
+ExecStart=/usr/local/bin/udp-custom server -exclude 53,5300
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+UCSVCEOF
+# --- iptables NAT rules (urut agar 5300 & 53 aman dari catch-all) ---
+cat > /etc/iptables/apply-slowdns-udp.sh <<IPTEOF
+#!/bin/bash
+IFACE=\$(ip route get 8.8.8.8 2>/dev/null | awk '{print \$5; exit}')
+[[ -z "\$IFACE" ]] && IFACE="eth0"
+iptables -t nat -F PREROUTING
+iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 5300 -j ACCEPT
+iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 53 -j REDIRECT --to-ports 5300
+iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 1:65535 -j REDIRECT --to-ports 36712
+iptables-save > /etc/iptables/rules.v4
+IPTEOF
+chmod +x /etc/iptables/apply-slowdns-udp.sh
+/etc/iptables/apply-slowdns-udp.sh
+cat > /etc/systemd/system/iptables-restore.service <<IPTSVC
+[Unit]
+Description=Restore iptables NAT rules
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/etc/iptables/apply-slowdns-udp.sh
+
+[Install]
+WantedBy=multi-user.target
+IPTSVC
+systemctl daemon-reload
+systemctl enable --now slowdns udp-custom iptables-restore >/dev/null 2>&1 || true
+
 ufw allow 22/tcp >/dev/null 2>&1 || true
 ufw allow 53/udp >/dev/null 2>&1 || true
 ufw allow 53/tcp >/dev/null 2>&1 || true
@@ -8812,6 +9134,7 @@ for srv in xray dropbear nginx vpn-ws-bridge vpn-proto-daemons vpn-telegram-bot;
     printf " %-24s : %s\n" "$srv" "$st"
 done
 echo "-----------------------------------------------------------------------"
-echo " SlowDNS        : UDP/TCP 53, 5300, 25000, 36712"
+echo " SlowDNS dnstt  : UDP/TCP 53 (dnstt-server)"
+echo " UDP-Custom      : UDP 36712 (udp-custom)"
 echo " PUB KEY        : $(cat /etc/vpn-bot/id_ed25519.pub 2>/dev/null || echo '-')"
 echo "========================================================================"
