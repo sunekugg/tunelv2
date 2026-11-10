@@ -722,17 +722,17 @@ def format_ssh_html(host, user, passwd, bug_host="bug.com", ip_limit=2, exp_str=
     slowdns_pubkey = "-"
     slowdns_ns = f"ns.{host}"
     try:
-        with open("/etc/slowdns/server.pub") as _f:
-            slowdns_pubkey = h(_f.read().strip())
-    except Exception:
-        pass
-    try:
         with open("/etc/vpn-bot/config.env") as _f:
             for _ln in _f:
                 if _ln.startswith("DOMAIN="):
                     _dom = _ln.split("=", 1)[1].strip().strip('"')
                     if _dom:
                         slowdns_ns = f"ns.{_dom}"
+    except Exception:
+        pass
+    try:
+        with open("/etc/slowdns/server.pub") as _f:
+            slowdns_pubkey = h(_f.read().strip())
     except Exception:
         pass
     top_box = (
@@ -742,7 +742,7 @@ def format_ssh_html(host, user, passwd, bug_host="bug.com", ip_limit=2, exp_str=
         f"SSH WS        : {h(host)}:80@{h(user)}:{h(passwd)}\n"
         f"SSH SSL       : {h(host)}:443@{h(user)}:{h(passwd)}\n"
         f"SSH UDP       : {h(host)}:1-65535@{h(user)}:{h(passwd)}\n"
-        f"SSH SELOWDNS  : ns-{h(host)}:5300@{h(user)}:{h(passwd)}\n"
+        f"SSH SELOWDNS  : {h(slowdns_ns)}:5300@{h(user)}:{h(passwd)}\n"
         "————————————————————————————————————\n"
         f"HOST          : {h(host)}\n"
         f"Username      : {h(user)}\n"
