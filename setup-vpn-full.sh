@@ -716,20 +716,15 @@ def make_vmess_b64(remarks, host, port, uuid_str, net, path, tls_val):
     raw = json.dumps(obj, separators=(",", ":")).encode("utf-8")
     return "vmess://" + base64.b64encode(raw).decode("utf-8")
 
+def _sub_host(host, pfx):
+    # id-biz.suneku.web.id + "ssl" -> ssl-id-biz.suneku.web.id
+    parts = host.split(".", 1)
+    return f"{pfx}-{parts[0]}.{parts[1]}" if len(parts) > 1 else f"{pfx}-{host}"
+
 def format_ssh_html(host, user, passwd, bug_host="bug.com", ip_limit=2, exp_str="-"):
     h = html.escape
     # Baca public key SlowDNS + NS domain dari server (fallback "-" bila belum terpasang)
     slowdns_pubkey = "-"
-    slowdns_ns = f"ns.{host}"
-    try:
-        with open("/etc/vpn-bot/config.env") as _f:
-            for _ln in _f:
-                if _ln.startswith("DOMAIN="):
-                    _dom = _ln.split("=", 1)[1].strip().strip('"')
-                    if _dom:
-                        slowdns_ns = f"ns.{_dom}"
-    except Exception:
-        pass
     try:
         with open("/etc/slowdns/server.pub") as _f:
             slowdns_pubkey = h(_f.read().strip())
@@ -737,46 +732,56 @@ def format_ssh_html(host, user, passwd, bug_host="bug.com", ip_limit=2, exp_str=
         pass
     top_box = (
         "————————————————————————————————————\n"
-        "            SSH/Dropbear\n"
-        "————————————————————————————————————\n"
-        f"SSH WS        : {h(host)}:80@{h(user)}:{h(passwd)}\n"
-        f"SSH SSL       : {h(host)}:443@{h(user)}:{h(passwd)}\n"
-        f"SSH UDP       : {h(host)}:1-65535@{h(user)}:{h(passwd)}\n"
-        f"SSH SELOWDNS  : {h(slowdns_ns)}:5300@{h(user)}:{h(passwd)}\n"
-        "————————————————————————————————————\n"
-        f"HOST          : {h(host)}\n"
-        f"Username      : {h(user)}\n"
-        f"Password      : {h(passwd)}\n"
-        f"Limit IP      : {ip_limit} IP\n"
-        f"Expired On    : {h(exp_str)}\n"
-        "————————————————————————————————————\n"
-        "TLS           : 443,8443\n"
-        "None TLS      : 80,8080\n"
-        "Any           : 2082,2083,8880\n"
-        "OpenSSH       : 444\n"
-        "Dropbear      : 90\n"
-        "SlowDNS       : 53,5300\n"
-        "UDP-Custom    : 1-65535\n"
-        f"NS SlowDNS    : {h(slowdns_ns)}\n"
-        f"PUBLIC KEY    : {slowdns_pubkey}\n"
-        "OHP + SSH     : 9080\n"
-        "Squid Proxy   : 3128\n"
-        "BadVPN UDPGW  : 7100-7600\n"
-        "OpenVPN TCP   : 80,1194\n"
-        "OpenVPN SSL   : 443\n"
-        "OpenVPN UDP   : 25000\n"
-        "OpenVPN DNS   : 53\n"
-        "OHP + OVPN    : 9088\n"
+        "               SSH PREMIUM\n"
+        " ————————————————————————————————————————\n"
+        "\n"
+        "               SSH/Dropbear\n"
+        "\n"
+        "————————————————————————————————————————\n"
+        f" SSH WS        : {h(host)}:80@{h(user)}:{h(passwd)}\n"
+        f" SSH SSL       : {h(_sub_host(host, 'ssl'))}:443@{h(user)}:{h(passwd)}\n"
+        f" SSH UDP       : {h(_sub_host(host, 'udp'))}:1-65535@{h(user)}:{h(passwd)}\n"
+        f" SSH SELOWDNS  : {h(_sub_host(host, 'ns'))}:5300@{h(user)}:{h(passwd)}\n"
+        " ————————————————————————————————————————\n"
+        f" HOST              : {h(host)}\n"
+        f" NameServer        : {h(_sub_host(host, 'ns'))}\n"
+        f" Username          : {h(user)}\n"
+        f" Password          : {h(passwd)}\n"
+        f" PUB Key           : {slowdns_pubkey}\n"
+        " ————————————————————————————————————————\n"
+        " TLS               : 443,8443\n"
+        " None TLS          : 80,8080\n"
+        " Any               : 2082,2083,8880\n"
+        " OpenSSH           : 444\n"
+        " Dropbear          : 90\n"
+        " SlowDNS           : 53,5300\n"
+        " UDP-Custom        : 1-65535\n"
+        " OHP + SSH         : 9080\n"
+        " Squid Proxy       : 3128\n"
+        " BadVPN UDPGW      : 7100-7600\n"
+        " OpenVPN TCP       : 80,1194\n"
+        " OpenVPN SSL       : 443\n"
+        " OpenVPN UDP       : 25000\n"
+        " OpenVPN DNS       : 53\n"
+        " OHP + OVPN        : 9088\n"
         "————————————————————————————————————"
     )
     p_ws = "GET / HTTP/1.1[crlf]Host: [host][crlf]Connection: Upgrade[crlf]User-Agent: [ua][crlf]Upgrade: websocket[crlf][crlf]"
-    p_enh = f"PATCH / HTTP/1.1[crlf]Host: [host][crlf]Host: {h(bug_host)}[crlf]Connection: Upgrade[crlf]User-Agent: [ua][crlf]Upgrade: websocket[crlf][crlf]"
+    p_enh = f"PACTH / HTTP/1.1[crlf]Host: [host][crlf]Host: {h(bug_host)}[crlf]Connection: Upgrade[crlf]User-Agent: [ua][crlf]Upgrade: websocket[crlf][crlf]"
+    ovpn_link = f"http://{h(host)}:81/myvpn-config.zip"
     return (
         f"<pre>{top_box}</pre>\n"
-        f"<b>Payload WS :</b>\n<code>{p_ws}</code>\n"
-        f"<pre>————————————————————————————————————</pre>\n"
-        f"<b>Payload ENHANCED :</b>\n<code>{p_enh}</code>\n"
-        f"<pre>————————————————————————————————————</pre>"
+        "————————————————————————————————————\n"
+        f" <b>Payload WS :</b> {p_ws}\n"
+        "————————————————————————————————————\n"
+        f" <b>Payload ENHANCED :</b> {p_enh}\n"
+        "————————————————————————————————————\n"
+        "                 <b>OpenVPN</b>\n"
+        "————————————————————————————————————\n"
+        f" {ovpn_link}\n"
+        "————————————————————————————————————\n"
+        f"         <b>Expired</b>  :  {h(exp_str)}\n"
+        "————————————————————————————————————"
     )
 
 def format_vmess_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
