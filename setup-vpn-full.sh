@@ -7726,8 +7726,13 @@ async def unlock_and_expiry_worker():
                     await asyncio.to_thread(engine.remove_account_from_server, target_srv, r["protocol"], r["username"])
                     conn.execute("DELETE FROM accounts WHERE id=?", (r["id"],))
                     _s = srv_map.get(r["server_id"])
-                    _key = (r["protocol"], _s["host"] if _s else "-", _s["ip"] if _s else "-",
-                            _s["isp"] if _s else "-", r["expired_at"])
+                    def _sv(k):
+                        try:
+                            return (_s[k] if _s[k] else "-") if _s else "-"
+                        except (KeyError, IndexError):
+                            return "-"
+                    _key = (r["protocol"], _sv("host"), _sv("ipv4") or _sv("host"),
+                            _sv("isp"), r["expired_at"])
                     removed_groups.setdefault(_key, []).append(r)
                 if expired_rows:
                     conn.commit()
