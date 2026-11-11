@@ -7745,8 +7745,7 @@ async def unlock_and_expiry_worker():
                             _lbl = f"{_proto.upper()} Account Expired"
                         _lines = "\\n".join(f"✓ {_r['username']} | {_exp_str}" for _r in _rows)
                         _grp_txt = (
-                            f"<code>IP     : {html.escape(_ip)}\\n"
-                            f"DOMAIN : {html.escape(_host)}\\n"
+                            f"<code>DOMAIN : {html.escape(_host)}\\n"
                             f"ISP    : {html.escape(_isp)}</code>\\n"
                             f"<blockquote><b>{_lbl}</b></blockquote>\\n"
                             f"{_lines}\\n"
