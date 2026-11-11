@@ -80,10 +80,25 @@ fetch_xray() {
     local arch="$1" url tmp="/tmp/xray.zip"
     url="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${arch}.zip"
     rm -f "$tmp"
-    if wget -q --timeout=60 -O "$tmp" "$url"; then return 0; fi
-    if wget -q --timeout=90 -O "$tmp" "https://ghproxy.com/$url"; then return 0; fi
-    if [[ -f /root/xray-linux-${arch}.zip ]]; then
-        cp -f "/root/xray-linux-${arch}.zip" "$tmp"; return 0
+    local mirrors=(
+        "$url"
+        "https://gh-proxy.com/$url"
+        "https://ghfast.top/$url"
+    )
+    for m in "${mirrors[@]}"; do
+        rm -f "$tmp"
+        wget -q --timeout=60 -O "$tmp" "$m" 2>/dev/null || continue
+        # validasi: harus >1MB dan magic ZIP (PK)
+        if [[ -s "$tmp" ]] && [[ $(stat -c%s "$tmp" 2>/dev/null || echo 0) -gt 1048576 ]] \
+           && [[ "$(head -c2 "$tmp" | od -An -tx1 | tr -d ' 
+')" == "504b" ]]; then
+            echo "  -> Xray diunduh dari: $m"; return 0
+        fi
+    done
+    # fallback manual: path yang BENAR
+    if [[ -f /root/xray-linux-${arch}.zip ]] && [[ "$(head -c2 /root/xray-linux-${arch}.zip | od -An -tx1 | tr -d ' 
+')" == "504b" ]]; then
+        cp -f /root/xray-linux-${arch}.zip "$tmp"; return 0
     fi
     return 1
 }
@@ -537,6 +552,7 @@ chmod +x /etc/vpn-bot/proto-daemons.py 2>/dev/null || true
 cat << 'EOF_EMBED_FILE' > /etc/vpn-bot/vpn_engine.py
 #!/usr/bin/env python3
 import base64
+import sqlite3
 import calendar
 import html
 import json
@@ -3499,7 +3515,7 @@ def build_admin_dashboard_text(user_id: int = None, include_rules: bool = True) 
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👥 Total User Bot: <b>{tot_users}</b> | Total Akun: <b>{tot_accs}</b> (🔒 <b>{locked_accs}</b>)\n"
         f"⚙️ Service Utama: Xray {st['xray_st']} | SSH {st['ssh_st']} | Dropbear {st['db_st']}\n"
-        f"🌐 Proxy Utama: HAProxy {st['hap_st']} | Nginx {st['ngx_st']}\n"
+        f"🌐 Proxy Utama: WS-Bridge {st['hap_st']} | Nginx {st['ngx_st']}\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
     )
 
@@ -4892,6 +4908,7 @@ async def cb_adm_limits_cfg(cb: CallbackQuery):
         [InlineKeyboardButton(text="🎁 Max Trial / Hari", callback_data="set_cfg:trial_create_max"), InlineKeyboardButton(text="🛡 Limit IP", callback_data="set_cfg:default_ip_limit")],
         [InlineKeyboardButton(text="📦 Kuota (GB)", callback_data="set_cfg:default_quota_gb"), InlineKeyboardButton(text="🚀 Speed (Mbps)", callback_data="set_cfg:default_speed_mbps")],
         [InlineKeyboardButton(text="👥 Max User VPS", callback_data="set_cfg:max_users_per_vps"), InlineKeyboardButton(text="🔄 Reset Limit Semua User", callback_data="adm_reset_all_quotas")],
+        [InlineKeyboardButton(text="♾ Limit IP Unlimited", callback_data="quick_unl:default_ip_limit"), InlineKeyboardButton(text="♾ Masa Aktif Unlimited", callback_data="quick_unl:default_days")],
         [InlineKeyboardButton(text="⬅️ Kembali ke Panel Admin", callback_data="admin_home")]
     ])
     await safe_edit_Basic(cb, txt, parse_mode="HTML", reply_markup=kb)
@@ -5108,6 +5125,7 @@ async def msg_admin_manual_topic(msg: Message, state: FSMContext):
 
 
 
+@router.callback_query(F.data.startswith("test_topic:"))
 async def cb_test_topic(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID: return
     mode = cb.data.split(":")[1]
@@ -8109,10 +8127,25 @@ fetch_xray() {
     local arch="$1" url tmp="/tmp/xray.zip"
     url="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${arch}.zip"
     rm -f "$tmp"
-    if wget -q --timeout=60 -O "$tmp" "$url"; then return 0; fi
-    if wget -q --timeout=90 -O "$tmp" "https://ghproxy.com/$url"; then return 0; fi
-    if [[ -f /root/xray-linux-${arch}.zip ]]; then
-        cp -f "/root/xray-linux-${arch}.zip" "$tmp"; return 0
+    local mirrors=(
+        "$url"
+        "https://gh-proxy.com/$url"
+        "https://ghfast.top/$url"
+    )
+    for m in "${mirrors[@]}"; do
+        rm -f "$tmp"
+        wget -q --timeout=60 -O "$tmp" "$m" 2>/dev/null || continue
+        # validasi: harus >1MB dan magic ZIP (PK)
+        if [[ -s "$tmp" ]] && [[ $(stat -c%s "$tmp" 2>/dev/null || echo 0) -gt 1048576 ]] \
+           && [[ "$(head -c2 "$tmp" | od -An -tx1 | tr -d ' 
+')" == "504b" ]]; then
+            echo "  -> Xray diunduh dari: $m"; return 0
+        fi
+    done
+    # fallback manual: path yang BENAR
+    if [[ -f /root/xray-linux-${arch}.zip ]] && [[ "$(head -c2 /root/xray-linux-${arch}.zip | od -An -tx1 | tr -d ' 
+')" == "504b" ]]; then
+        cp -f /root/xray-linux-${arch}.zip "$tmp"; return 0
     fi
     return 1
 }
@@ -8228,8 +8261,12 @@ EODBSVC
 # 4. Instalasi Xray-Core & Sertifikat SSL
 echo "[4/6] Memasang Xray-Core & Sertifikat SSL..."
 if ! fetch_xray "$ARCH"; then
-    echo "GAGAL: Tidak bisa mengunduh Xray dari semua sumber."
-    echo "Solusi: upload manual binary ke /root/xray-linux-${ARCH}.zip lalu jalankan ulang."
+    echo "GAGAL: Tidak bisa mengunduh Xray dari semua sumber (kemungkinan ISP/data center memblokir GitHub)."
+    echo "Opsi A — unduh dari PC/laptop, lalu upload ke VPS:"
+    echo "  1) Di PC     : curl -L -o xray-linux-${ARCH}.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${ARCH}.zip"
+    echo "  2) Upload ke : /root/xray-linux-${ARCH}.zip  (scp/sftp)"
+    echo "  3) Jalankan ulang installer; fallback manual otomatis dipakai."
+    echo "Opsi B — kalau VPS punya akses ke gh-proxy/ghfast.top, jalankan installer ulang (sudah dicoba otomatis)."
     exit 1
 fi
 unzip -qo /tmp/xray.zip -d /usr/local/bin/ && chmod +x /usr/local/bin/xray && rm -f /tmp/xray.zip
@@ -8269,8 +8306,9 @@ User=root
 Environment=TZ=UTC
 ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
 Restart=always
-RestartSec=1
+RestartSec=3
 LimitNOFILE=1000000
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target
@@ -8879,101 +8917,6 @@ http {
     }
 }
 EONGX_STREAM
- > /etc/nginx/nginx.conf
-user www-data;
-worker_processes auto;
-pid /run/nginx.pid;
-include /etc/nginx/modules-enabled/*.conf;
-
-events {
-    worker_connections 4096;
-    multi_accept on;
-}
-
-stream {
-    map $ssl_preread_alpn_protocols $tls_backend {
-        "h2"     127.0.0.1:10443;
-        default  127.0.0.1:10444;
-    }
-
-    server {
-        listen 443 reuseport;
-        listen 8443 reuseport;
-        proxy_pass $tls_backend;
-        proxy_protocol on;
-        ssl_preread on;
-        proxy_timeout 86400s;
-    }
-
-    server {
-        listen 127.0.0.1:10444 ssl proxy_protocol reuseport;
-        ssl_certificate /etc/xray/certs/fullchain.pem;
-        ssl_certificate_key /etc/xray/certs/privkey.pem;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_ciphers HIGH:!aNULL:!MD5;
-        proxy_pass 127.0.0.1:10015;
-        proxy_protocol on;
-        proxy_timeout 86400s;
-    }
-
-    server {
-        listen 80 reuseport;
-        listen 8080 reuseport;
-        listen 8880 reuseport;
-        listen 2052 reuseport;
-        listen 2053 reuseport;
-        listen 2082 reuseport;
-        listen 2083 reuseport;
-        proxy_pass 127.0.0.1:10015;
-        proxy_protocol on;
-        proxy_timeout 86400s;
-    }
-}
-
-http {
-    map $http_upgrade $connection_upgrade {
-        default upgrade;
-        ''      close;
-    }
-    sendfile on;
-    tcp_nopush on;
-    tcp_nodelay on;
-    keepalive_timeout 65;
-    access_log off;
-    error_log /var/log/nginx/error.log crit;
-
-    server {
-        listen 127.0.0.1:10443 ssl http2 proxy_protocol default_server reuseport;
-        server_name _;
-
-        ssl_certificate /etc/xray/certs/fullchain.pem;
-        ssl_certificate_key /etc/xray/certs/privkey.pem;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_ciphers HIGH:!aNULL:!MD5;
-
-        location = /vmess { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
-        location = /vless { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
-        location = /trojan { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
-        location = /ss-ws { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
-        location ^~ /vmess/ { grpc_pass grpc://127.0.0.1:10002; }
-        location ^~ /vless/ { grpc_pass grpc://127.0.0.1:10005; }
-        location ^~ /trojan/ { grpc_pass grpc://127.0.0.1:10008; }
-        location ^~ /ss-grpc/ { grpc_pass grpc://127.0.0.1:10011; }
-        # Fallback WebSocket + HTTP-Upgrade ke WS-Bridge (SSH + Xray WS/httpupgrade)
-        location / {
-            proxy_pass http://127.0.0.1:10015;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection $connection_upgrade;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_read_timeout 86400s;
-            proxy_send_timeout 86400s;
-            proxy_buffering off;
-        }
-    }
-}
-EONGX_STREAM
 
 # Jika OS remote tidak memiliki modul stream, otomatis gunakan fallback HTTP/HTTPS langsung agar Nginx 100% menyala
 if ! nginx -t >/dev/null 2>&1; then
@@ -9076,7 +9019,7 @@ echo "INSTALL_OK"
 EOF_EMBED_FILE
 chmod +x /etc/vpn-bot/remote_installer.sh 2>/dev/null || true
 
-cat << 'EOF_EMBED_FILE' > /etc/nginx/nginx.conf
+cat << 'EONGX_STREAM' > /etc/nginx/nginx.conf
 user www-data;
 worker_processes auto;
 pid /run/nginx.pid;
@@ -9089,9 +9032,24 @@ events {
 
 stream {
     # Single-Hop TLS: Mencatat Real-IP asli HP langsung ke WS-Bridge (10015)
+    # Single-Hop NTLS (HTTP WS / Payload): Mencatat Real-IP asli HP langsung ke WS-Bridge (10015)
+    map $ssl_preread_alpn_protocols $tls_backend {
+        default     127.0.0.1:10444;
+        ~*h2          127.0.0.1:10443;
+    }
+
+    # 443/8443: pisah ALPN. h2 -> HTTP (gRPC), lainnya -> TLS terminate -> WS-Bridge (SSH SSL + WS)
     server {
-        listen 443 ssl reuseport;
-        listen 8443 ssl reuseport;
+        listen 443 reuseport;
+        listen 8443 reuseport;
+        ssl_preread on;
+        proxy_pass $tls_backend;
+        proxy_timeout 86400s;
+    }
+
+    # TLS terminate utk jalur non-h2, teruskan plaintext ke WS-Bridge
+    server {
+        listen 127.0.0.1:10444 ssl;
         ssl_certificate /etc/xray/certs/fullchain.pem;
         ssl_certificate_key /etc/xray/certs/privkey.pem;
         ssl_protocols TLSv1.2 TLSv1.3;
@@ -9102,7 +9060,6 @@ stream {
         proxy_timeout 86400s;
     }
 
-    # Single-Hop NTLS (HTTP WS / Payload): Mencatat Real-IP asli HP langsung ke WS-Bridge (10015)
     server {
         listen 80 reuseport;
         listen 8080 reuseport;
@@ -9118,6 +9075,11 @@ stream {
 }
 
 http {
+
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
+    }
     sendfile on;
     tcp_nopush on;
     tcp_nodelay on;
@@ -9139,14 +9101,34 @@ http {
         grpc_read_timeout 86400s;
         grpc_send_timeout 86400s;
 
+        location = /vmess { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
+        location = /vless { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
+        location = /trojan { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
+        location = /ss-ws { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
         location ^~ /vmess/ { grpc_pass grpc://127.0.0.1:10002; }
+        location ^~ /vmess-grpc/ { grpc_pass grpc://127.0.0.1:10002; }
         location ^~ /vless/ { grpc_pass grpc://127.0.0.1:10005; }
+        location ^~ /vless-grpc/ { grpc_pass grpc://127.0.0.1:10005; }
         location ^~ /trojan/ { grpc_pass grpc://127.0.0.1:10008; }
+        location ^~ /trojan-grpc/ { grpc_pass grpc://127.0.0.1:10008; }
         location ^~ /ss-grpc/ { grpc_pass grpc://127.0.0.1:10011; }
+
+        # WebSocket + HTTP-Upgrade fallback ke WS-Bridge (SSH dan Xray WS/Upgrade)
+        location / {
+            proxy_pass http://127.0.0.1:10015;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_read_timeout 86400s;
+            proxy_send_timeout 86400s;
+            proxy_buffering off;
+        }
     }
 }
-
-EOF_EMBED_FILE
+EONGX_STREAM
 chmod +x /etc/nginx/nginx.conf 2>/dev/null || true
 
 # 3. Konfigurasi SSH, Dropbear 2019.78 & Unit Service Lengkap
@@ -9200,8 +9182,12 @@ EODBSVC
 # 4. Instalasi Xray-Core & Sertifikat SSL
 echo "[4/6] Memasang Xray-Core & Sertifikat SSL..."
 if ! fetch_xray "$ARCH"; then
-    echo "GAGAL: Tidak bisa mengunduh Xray dari semua sumber."
-    echo "Solusi: upload manual binary ke /root/xray-linux-${ARCH}.zip lalu jalankan ulang."
+    echo "GAGAL: Tidak bisa mengunduh Xray dari semua sumber (kemungkinan ISP/data center memblokir GitHub)."
+    echo "Opsi A — unduh dari PC/laptop, lalu upload ke VPS:"
+    echo "  1) Di PC     : curl -L -o xray-linux-${ARCH}.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${ARCH}.zip"
+    echo "  2) Upload ke : /root/xray-linux-${ARCH}.zip  (scp/sftp)"
+    echo "  3) Jalankan ulang installer; fallback manual otomatis dipakai."
+    echo "Opsi B — kalau VPS punya akses ke gh-proxy/ghfast.top, jalankan installer ulang (sudah dicoba otomatis)."
     exit 1
 fi
 unzip -qo /tmp/xray.zip -d /usr/local/bin/ && chmod +x /usr/local/bin/xray && rm -f /tmp/xray.zip
@@ -9241,8 +9227,9 @@ User=root
 Environment=TZ=UTC
 ExecStart=/usr/local/bin/xray run -config /etc/xray/config.json
 Restart=always
-RestartSec=1
+RestartSec=3
 LimitNOFILE=1000000
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target
