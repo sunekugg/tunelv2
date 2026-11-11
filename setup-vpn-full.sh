@@ -8879,7 +8879,7 @@ http {
     server {
         listen 127.0.0.1:10443 ssl http2 default_server reuseport;
         listen 2096 ssl http2 reuseport;
-        server_name sg8.sunekvpn.cc.cd _;
+        server_name __DOMAIN__ _;
 
         ssl_certificate /etc/xray/certs/fullchain.pem;
         ssl_certificate_key /etc/xray/certs/privkey.pem;
@@ -8917,6 +8917,8 @@ http {
     }
 }
 EONGX_STREAM
+
+sed -i "s/__DOMAIN__/${DOMAIN}/g" /etc/nginx/nginx.conf
 
 # Jika OS remote tidak memiliki modul stream, otomatis gunakan fallback HTTP/HTTPS langsung agar Nginx 100% menyala
 if ! nginx -t >/dev/null 2>&1; then
