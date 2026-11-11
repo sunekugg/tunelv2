@@ -8238,37 +8238,60 @@ ARCH_X=$(uname -m)
 case "$ARCH_X" in x86_64) XARCH="amd64";; aarch64|arm64) XARCH="arm64";; *) XARCH="amd64";; esac
 mkdir -p /etc/slowdns /etc/udp /etc/iptables
 VAYDNS_BASE="https://raw.githubusercontent.com/sunekugg/tunelv2/main/bin"
+__fetch_raw() {  # $1=outfile $2=owner/repo/branch/path — fallback IP statis bila DNS mati
+    local _OUT="$1" _P="$2" _IP
+    rm -f "$_OUT"
+    wget -qO "$_OUT" "https://raw.githubusercontent.com/$_P" 2>/dev/null || true
+    if [[ -s "$_OUT" && "$(head -c4 "$_OUT" 2>/dev/null)" == $'\x7fELF' ]]; then return 0; fi
+    for _IP in 185.199.108.133 185.199.109.133 185.199.110.133; do
+        curl -sf --resolve raw.githubusercontent.com:443:$_IP -o "$_OUT" \
+            "https://raw.githubusercontent.com/$_P" 2>/dev/null || true
+        if [[ -s "$_OUT" && "$(head -c4 "$_OUT" 2>/dev/null)" == $'\x7fELF' ]]; then return 0; fi
+        rm -f "$_OUT"
+    done
+    return 1
+}
 # --- vaydns-server (mod VayDNS: multi-record TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA) ---
-if [[ ! -x /usr/local/bin/vaydns-server ]]; then
-    wget -qO /usr/local/bin/vaydns-server \\
-        "${VAYDNS_BASE}/vaydns-server-linux-${XARCH}" \\
-        2>/dev/null || \\
-    wget -qO /usr/local/bin/vaydns-server \\
-        "https://github.com/net2share/vaydns/releases/download/v0.2.8/vaydns-server-linux-${XARCH}" \\
-        2>/dev/null || true
+if ! head -c4 /usr/local/bin/vaydns-server 2>/dev/null | grep -q $'\x7fELF'; then
+    rm -f /usr/local/bin/vaydns-server
+    __fetch_raw /usr/local/bin/vaydns-server "sunekugg/tunelv2/main/bin/vaydns-server-linux-${XARCH}" || true
+    if ! head -c4 /usr/local/bin/vaydns-server 2>/dev/null | grep -q $'\x7fELF'; then
+        wget -qO /usr/local/bin/vaydns-server \
+            "https://github.com/net2share/vaydns/releases/download/v0.2.8/vaydns-server-linux-${XARCH}" 2>/dev/null || true
+    fi
     chmod +x /usr/local/bin/vaydns-server 2>/dev/null || true
 fi
 # --- badvpn udpgw (fix UDPGW/badvpn :7300) ---
-if [[ ! -x /usr/local/bin/udpgw ]]; then
-    for _UDPGW_URL in \
-        "https://raw.githubusercontent.com/Midas-XYZ/tunnel/main/udpgw" \
-        "https://raw.githubusercontent.com/http-custom/badvpn/main/badvpn-udpgw" \
-        "https://raw.githubusercontent.com/Laikoinc/Storefile/main/udpgw"; do
-        wget -qO /usr/local/bin/udpgw "$_UDPGW_URL" 2>/dev/null && \
-        file /usr/local/bin/udpgw 2>/dev/null | grep -q ELF && break
-        rm -f /usr/local/bin/udpgw
+if ! head -c4 /usr/local/bin/udpgw 2>/dev/null | grep -q $'\x7fELF'; then
+    rm -f /usr/local/bin/udpgw
+    for _UDPGW_PATH in \
+        "Midas-XYZ/tunnel/main/udpgw" \
+        "http-custom/badvpn/main/badvpn-udpgw" \
+        "Laikoinc/Storefile/main/udpgw"; do
+        __fetch_raw /usr/local/bin/udpgw "$_UDPGW_PATH" && break
     done
     chmod +x /usr/local/bin/udpgw 2>/dev/null || true
 fi
 # legacy name: dnstt-server → vaydns-server (kompatibilitas lama)
 [[ -x /usr/local/bin/vaydns-server ]] && ln -sf /usr/local/bin/vaydns-server /usr/local/bin/dnstt-server
+for _BINCHK in vaydns-server udpgw udp-custom; do
+    if ! head -c4 "/usr/local/bin/$_BINCHK" 2>/dev/null | grep -q $'\x7fELF'; then
+        echo "  !! PERINGATAN: $_BINCHK gagal diunduh — perbaiki DNS/koneksi lalu jalankan ulang installer"
+    fi
+done
 # --- udp-custom ---
-if [[ ! -x /usr/local/bin/udp-custom ]]; then
+if ! head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
+    rm -f /usr/local/bin/udp-custom
     UC_URL="https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
     if [[ "$XARCH" == "arm64" ]]; then
         UC_URL="https://raw.githubusercontent.com/fisabiliyusri/Mantap/main/udp-custom/udp-custom-linux-arm"
     fi
     wget -qO /usr/local/bin/udp-custom "$UC_URL" 2>/dev/null || true
+    if ! head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
+        rm -f /usr/local/bin/udp-custom
+        curl -sf -o /usr/local/bin/udp-custom \
+            "https://github.com/http-custom/udp-custom/releases/latest/download/udp-custom-linux-amd64" 2>/dev/null || true
+    fi
     chmod +x /usr/local/bin/udp-custom 2>/dev/null || true
 fi
 # --- systemd-resolved: matikan agar :53 bebas ---
@@ -9054,37 +9077,60 @@ ARCH_X=$(uname -m)
 case "$ARCH_X" in x86_64) XARCH="amd64";; aarch64|arm64) XARCH="arm64";; *) XARCH="amd64";; esac
 mkdir -p /etc/slowdns /etc/udp /etc/iptables
 VAYDNS_BASE="https://raw.githubusercontent.com/sunekugg/tunelv2/main/bin"
+__fetch_raw() {  # $1=outfile $2=owner/repo/branch/path — fallback IP statis bila DNS mati
+    local _OUT="$1" _P="$2" _IP
+    rm -f "$_OUT"
+    wget -qO "$_OUT" "https://raw.githubusercontent.com/$_P" 2>/dev/null || true
+    if [[ -s "$_OUT" && "$(head -c4 "$_OUT" 2>/dev/null)" == $'\x7fELF' ]]; then return 0; fi
+    for _IP in 185.199.108.133 185.199.109.133 185.199.110.133; do
+        curl -sf --resolve raw.githubusercontent.com:443:$_IP -o "$_OUT" \
+            "https://raw.githubusercontent.com/$_P" 2>/dev/null || true
+        if [[ -s "$_OUT" && "$(head -c4 "$_OUT" 2>/dev/null)" == $'\x7fELF' ]]; then return 0; fi
+        rm -f "$_OUT"
+    done
+    return 1
+}
 # --- vaydns-server (mod VayDNS: multi-record TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA) ---
-if [[ ! -x /usr/local/bin/vaydns-server ]]; then
-    wget -qO /usr/local/bin/vaydns-server \\
-        "${VAYDNS_BASE}/vaydns-server-linux-${XARCH}" \\
-        2>/dev/null || \\
-    wget -qO /usr/local/bin/vaydns-server \\
-        "https://github.com/net2share/vaydns/releases/download/v0.2.8/vaydns-server-linux-${XARCH}" \\
-        2>/dev/null || true
+if ! head -c4 /usr/local/bin/vaydns-server 2>/dev/null | grep -q $'\x7fELF'; then
+    rm -f /usr/local/bin/vaydns-server
+    __fetch_raw /usr/local/bin/vaydns-server "sunekugg/tunelv2/main/bin/vaydns-server-linux-${XARCH}" || true
+    if ! head -c4 /usr/local/bin/vaydns-server 2>/dev/null | grep -q $'\x7fELF'; then
+        wget -qO /usr/local/bin/vaydns-server \
+            "https://github.com/net2share/vaydns/releases/download/v0.2.8/vaydns-server-linux-${XARCH}" 2>/dev/null || true
+    fi
     chmod +x /usr/local/bin/vaydns-server 2>/dev/null || true
 fi
 # --- badvpn udpgw (fix UDPGW/badvpn :7300) ---
-if [[ ! -x /usr/local/bin/udpgw ]]; then
-    for _UDPGW_URL in \
-        "https://raw.githubusercontent.com/Midas-XYZ/tunnel/main/udpgw" \
-        "https://raw.githubusercontent.com/http-custom/badvpn/main/badvpn-udpgw" \
-        "https://raw.githubusercontent.com/Laikoinc/Storefile/main/udpgw"; do
-        wget -qO /usr/local/bin/udpgw "$_UDPGW_URL" 2>/dev/null && \
-        file /usr/local/bin/udpgw 2>/dev/null | grep -q ELF && break
-        rm -f /usr/local/bin/udpgw
+if ! head -c4 /usr/local/bin/udpgw 2>/dev/null | grep -q $'\x7fELF'; then
+    rm -f /usr/local/bin/udpgw
+    for _UDPGW_PATH in \
+        "Midas-XYZ/tunnel/main/udpgw" \
+        "http-custom/badvpn/main/badvpn-udpgw" \
+        "Laikoinc/Storefile/main/udpgw"; do
+        __fetch_raw /usr/local/bin/udpgw "$_UDPGW_PATH" && break
     done
     chmod +x /usr/local/bin/udpgw 2>/dev/null || true
 fi
 # legacy name: dnstt-server → vaydns-server (kompatibilitas lama)
 [[ -x /usr/local/bin/vaydns-server ]] && ln -sf /usr/local/bin/vaydns-server /usr/local/bin/dnstt-server
+for _BINCHK in vaydns-server udpgw udp-custom; do
+    if ! head -c4 "/usr/local/bin/$_BINCHK" 2>/dev/null | grep -q $'\x7fELF'; then
+        echo "  !! PERINGATAN: $_BINCHK gagal diunduh — perbaiki DNS/koneksi lalu jalankan ulang installer"
+    fi
+done
 # --- udp-custom ---
-if [[ ! -x /usr/local/bin/udp-custom ]]; then
+if ! head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
+    rm -f /usr/local/bin/udp-custom
     UC_URL="https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
     if [[ "$XARCH" == "arm64" ]]; then
         UC_URL="https://raw.githubusercontent.com/fisabiliyusri/Mantap/main/udp-custom/udp-custom-linux-arm"
     fi
     wget -qO /usr/local/bin/udp-custom "$UC_URL" 2>/dev/null || true
+    if ! head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
+        rm -f /usr/local/bin/udp-custom
+        curl -sf -o /usr/local/bin/udp-custom \
+            "https://github.com/http-custom/udp-custom/releases/latest/download/udp-custom-linux-amd64" 2>/dev/null || true
+    fi
     chmod +x /usr/local/bin/udp-custom 2>/dev/null || true
 fi
 # --- systemd-resolved: matikan agar :53 bebas ---
