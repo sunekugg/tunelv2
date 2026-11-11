@@ -21,6 +21,42 @@ if [[ -z "$BOT_TOKEN" || -z "$ADMIN_ID" || -z "$DOMAIN" ]]; then
     exit 1
 fi
 
+# 0. Pre-flight: pastikan DNS & akses GitHub jalan SEBELUM apa pun (apt butuh DNS)
+echo "[0/6] Pre-flight: cek DNS & akses GitHub..."
+if ! getent hosts github.com >/dev/null 2>&1; then
+    echo "  DNS gagal resolve — coba perbaiki resolv.conf..."
+    printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
+    sleep 1
+    if ! getent hosts github.com >/dev/null 2>&1; then
+        echo "  Masih gagal — coba DNS over TCP (provider blok UDP 53)..."
+        apt-get install -y -qq dnsutils >/dev/null 2>&1 || true
+        if command -v dig >/dev/null && dig +tcp @1.1.1.1 github.com A +short 2>/dev/null | grep -q .; then
+            echo "  DNS via TCP jalan — pasang dnsmasq sebagai forwarder lokal (fallback TCP otomatis)..."
+            apt-get install -y -qq dnsmasq >/dev/null 2>&1 || true
+            if command -v dnsmasq >/dev/null; then
+                printf 'server=1.1.1.1\nserver=8.8.8.8\nno-resolv\nport=53\n' > /etc/dnsmasq.d/vpn-fwd.conf
+                systemctl restart dnsmasq 2>/dev/null || true
+                printf "nameserver 127.0.0.1\n" > /etc/resolv.conf
+                sleep 1
+            fi
+        fi
+    fi
+    if ! getent hosts github.com >/dev/null 2>&1; then
+        echo "========================================================================"
+        echo "  GAGAL PRE-FLIGHT: DNS tidak berfungsi (kemungkinan provider blok UDP 53)."
+        echo "  Installer butuh DNS untuk apt. Perbaiki DNS dulu, lalu jalankan ulang."
+        echo "  Cek manual : dig @1.1.1.1 github.com +short"
+        echo "  Alternatif : pasang unbound/dnscrypt-proxy dengan DNS-over-HTTPS"
+        echo "========================================================================"
+        exit 1
+    fi
+fi
+if ! curl -sfI --max-time 10 https://raw.githubusercontent.com/sunekugg/tunelv2/main/setup-vpn-full.sh >/dev/null 2>&1 \
+   && ! wget -q --spider --timeout=10 https://raw.githubusercontent.com/sunekugg/tunelv2/main/setup-vpn-full.sh 2>/dev/null; then
+    echo "  PERINGATAN: akses raw.githubusercontent.com gagal — download binary nanti pakai fallback IP statis."
+fi
+echo "  Pre-flight OK."
+
 # 1. Buka Paksa Kunci APT/DPKG (Mengatasi lock-frontend PID 1410 di VPS Baru)
 echo "[1/6] Membebaskan kunci APT/DPKG & mengoptimasi Swap RAM..."
 systemctl stop apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service apt-daily.service apt-daily-upgrade.service >/dev/null 2>&1 || true
@@ -7963,6 +7999,42 @@ if [[ -z "$BOT_TOKEN" || -z "$ADMIN_ID" || -z "$DOMAIN" ]]; then
     echo "Error: Bot Token, Admin ID, dan Domain wajib diisi!"
     exit 1
 fi
+
+# 0. Pre-flight: pastikan DNS & akses GitHub jalan SEBELUM apa pun (apt butuh DNS)
+echo "[0/6] Pre-flight: cek DNS & akses GitHub..."
+if ! getent hosts github.com >/dev/null 2>&1; then
+    echo "  DNS gagal resolve — coba perbaiki resolv.conf..."
+    printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
+    sleep 1
+    if ! getent hosts github.com >/dev/null 2>&1; then
+        echo "  Masih gagal — coba DNS over TCP (provider blok UDP 53)..."
+        apt-get install -y -qq dnsutils >/dev/null 2>&1 || true
+        if command -v dig >/dev/null && dig +tcp @1.1.1.1 github.com A +short 2>/dev/null | grep -q .; then
+            echo "  DNS via TCP jalan — pasang dnsmasq sebagai forwarder lokal (fallback TCP otomatis)..."
+            apt-get install -y -qq dnsmasq >/dev/null 2>&1 || true
+            if command -v dnsmasq >/dev/null; then
+                printf 'server=1.1.1.1\nserver=8.8.8.8\nno-resolv\nport=53\n' > /etc/dnsmasq.d/vpn-fwd.conf
+                systemctl restart dnsmasq 2>/dev/null || true
+                printf "nameserver 127.0.0.1\n" > /etc/resolv.conf
+                sleep 1
+            fi
+        fi
+    fi
+    if ! getent hosts github.com >/dev/null 2>&1; then
+        echo "========================================================================"
+        echo "  GAGAL PRE-FLIGHT: DNS tidak berfungsi (kemungkinan provider blok UDP 53)."
+        echo "  Installer butuh DNS untuk apt. Perbaiki DNS dulu, lalu jalankan ulang."
+        echo "  Cek manual : dig @1.1.1.1 github.com +short"
+        echo "  Alternatif : pasang unbound/dnscrypt-proxy dengan DNS-over-HTTPS"
+        echo "========================================================================"
+        exit 1
+    fi
+fi
+if ! curl -sfI --max-time 10 https://raw.githubusercontent.com/sunekugg/tunelv2/main/setup-vpn-full.sh >/dev/null 2>&1 \
+   && ! wget -q --spider --timeout=10 https://raw.githubusercontent.com/sunekugg/tunelv2/main/setup-vpn-full.sh 2>/dev/null; then
+    echo "  PERINGATAN: akses raw.githubusercontent.com gagal — download binary nanti pakai fallback IP statis."
+fi
+echo "  Pre-flight OK."
 
 # 1. Buka Paksa Kunci APT/DPKG (Mengatasi lock-frontend PID 1410 di VPS Baru)
 echo "[1/6] Membebaskan kunci APT/DPKG & mengoptimasi Swap RAM..."
