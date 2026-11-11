@@ -4382,7 +4382,7 @@ async def cb_sd_regenservice(cb: CallbackQuery):
         unit = (
             "[Unit]\nDescription=SlowDNS dnstt Server\nAfter=network.target\n\n"
             "[Service]\n"
-            f"ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-{dom} -upstream 127.0.0.1:90 -record-type txt\n"
+            f"ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-{dom} -upstream 127.0.0.1:90 -record-type txt -dnstt-compat\n"
             "Restart=on-failure\nRestartSec=3\n\n"
             "[Install]\nWantedBy=multi-user.target\n"
         )
@@ -8298,7 +8298,7 @@ Description=SlowDNS dnstt Server
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-${DOMAIN} -upstream 127.0.0.1:90 -record-type txt
+ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-${DOMAIN} -upstream 127.0.0.1:90 -record-type txt -dnstt-compat
 Restart=on-failure
 RestartSec=3
 
@@ -8346,6 +8346,12 @@ iptables -t nat -F PREROUTING
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 5300 -j ACCEPT
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 53 -j REDIRECT --to-ports 5300
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 1:65535 -j REDIRECT --to-ports 36712
+# FIX: izinkan INPUT UDP untuk 5300/53/36712 (chain INPUT beda dari NAT;
+# tanpa ini paket ke 36712 bisa diblok policy INPUT default-DROP)
+iptables -C INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 36712 -j ACCEPT
+iptables -C INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 5300 -j ACCEPT
+iptables -C INPUT -p udp --dport 53 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 53 -j ACCEPT
+iptables -C INPUT -p udp --dport 7300 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 7300 -j ACCEPT
 iptables-save > /etc/iptables/rules.v4
 IPTEOF
 chmod +x /etc/iptables/apply-slowdns-udp.sh
@@ -9108,7 +9114,7 @@ Description=SlowDNS dnstt Server
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-${DOMAIN} -upstream 127.0.0.1:90 -record-type txt
+ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-${DOMAIN} -upstream 127.0.0.1:90 -record-type txt -dnstt-compat
 Restart=on-failure
 RestartSec=3
 
@@ -9156,6 +9162,12 @@ iptables -t nat -F PREROUTING
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 5300 -j ACCEPT
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 53 -j REDIRECT --to-ports 5300
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 1:65535 -j REDIRECT --to-ports 36712
+# FIX: izinkan INPUT UDP untuk 5300/53/36712 (chain INPUT beda dari NAT;
+# tanpa ini paket ke 36712 bisa diblok policy INPUT default-DROP)
+iptables -C INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 36712 -j ACCEPT
+iptables -C INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 5300 -j ACCEPT
+iptables -C INPUT -p udp --dport 53 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 53 -j ACCEPT
+iptables -C INPUT -p udp --dport 7300 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 7300 -j ACCEPT
 iptables-save > /etc/iptables/rules.v4
 IPTEOF
 chmod +x /etc/iptables/apply-slowdns-udp.sh
