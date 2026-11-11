@@ -8337,6 +8337,7 @@ fi
 if ! head -c4 /usr/local/bin/udpgw 2>/dev/null | grep -q $'\x7fELF'; then
     rm -f /usr/local/bin/udpgw
     for _UDPGW_PATH in \
+        "sunekugg/tunelv2/main/bin/udpgw-linux-${XARCH}" \
         "Midas-XYZ/tunnel/main/udpgw" \
         "http-custom/badvpn/main/badvpn-udpgw" \
         "Laikoinc/Storefile/main/udpgw"; do
@@ -9176,6 +9177,7 @@ fi
 if ! head -c4 /usr/local/bin/udpgw 2>/dev/null | grep -q $'\x7fELF'; then
     rm -f /usr/local/bin/udpgw
     for _UDPGW_PATH in \
+        "sunekugg/tunelv2/main/bin/udpgw-linux-${XARCH}" \
         "Midas-XYZ/tunnel/main/udpgw" \
         "http-custom/badvpn/main/badvpn-udpgw" \
         "Laikoinc/Storefile/main/udpgw"; do
