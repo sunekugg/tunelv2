@@ -8535,6 +8535,7 @@ ufw allow 5300/tcp >/dev/null 2>&1 || true
 ufw allow 36712/udp >/dev/null 2>&1 || true
 ufw allow 7100:7600/tcp >/dev/null 2>&1 || true
 ufw allow 7300/tcp >/dev/null 2>&1 || true
+ufw allow 2096/tcp >/dev/null 2>&1 || true
 ufw allow 9080/tcp >/dev/null 2>&1 || true
 ufw allow 9088/tcp >/dev/null 2>&1 || true
 ufw --force enable >/dev/null 2>&1 || true
@@ -9375,6 +9376,7 @@ ufw allow 5300/tcp >/dev/null 2>&1 || true
 ufw allow 36712/udp >/dev/null 2>&1 || true
 ufw allow 7100:7600/tcp >/dev/null 2>&1 || true
 ufw allow 7300/tcp >/dev/null 2>&1 || true
+ufw allow 2096/tcp >/dev/null 2>&1 || true
 ufw allow 9080/tcp >/dev/null 2>&1 || true
 ufw allow 9088/tcp >/dev/null 2>&1 || true
 ufw --force enable >/dev/null 2>&1 || true
