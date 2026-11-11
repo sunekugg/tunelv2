@@ -8781,6 +8781,116 @@ events {
 }
 
 stream {
+    # Single-Hop TLS: Mencatat Real-IP asli HP langsung ke WS-Bridge (10015)
+    # Single-Hop NTLS (HTTP WS / Payload): Mencatat Real-IP asli HP langsung ke WS-Bridge (10015)
+    map $ssl_preread_alpn_protocols $tls_backend {
+        default     127.0.0.1:10444;
+        ~*h2          127.0.0.1:10443;
+    }
+
+    # 443/8443: pisah ALPN. h2 -> HTTP (gRPC), lainnya -> TLS terminate -> WS-Bridge (SSH SSL + WS)
+    server {
+        listen 443 reuseport;
+        listen 8443 reuseport;
+        ssl_preread on;
+        proxy_pass $tls_backend;
+        proxy_timeout 86400s;
+    }
+
+    # TLS terminate utk jalur non-h2, teruskan plaintext ke WS-Bridge
+    server {
+        listen 127.0.0.1:10444 ssl;
+        ssl_certificate /etc/xray/certs/fullchain.pem;
+        ssl_certificate_key /etc/xray/certs/privkey.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers HIGH:!aNULL:!MD5;
+        ssl_session_cache shared:STREAM_SSL:10m;
+        proxy_pass 127.0.0.1:10015;
+        proxy_protocol on;
+        proxy_timeout 86400s;
+    }
+
+    server {
+        listen 80 reuseport;
+        listen 8080 reuseport;
+        listen 8880 reuseport;
+        listen 2052 reuseport;
+        listen 2053 reuseport;
+        listen 2082 reuseport;
+        listen 2083 reuseport;
+        proxy_pass 127.0.0.1:10015;
+        proxy_protocol on;
+        proxy_timeout 86400s;
+    }
+}
+
+http {
+
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
+    }
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    access_log off;
+    error_log /var/log/nginx/error.log crit;
+
+    absolute_redirect off;
+    server {
+        listen 127.0.0.1:10443 ssl http2 default_server reuseport;
+        listen 2096 ssl http2 reuseport;
+        server_name sg8.sunekvpn.cc.cd _;
+
+        ssl_certificate /etc/xray/certs/fullchain.pem;
+        ssl_certificate_key /etc/xray/certs/privkey.pem;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers HIGH:!aNULL:!MD5;
+
+        grpc_read_timeout 86400s;
+        grpc_send_timeout 86400s;
+
+        location = /vmess { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
+        location = /vless { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
+        location = /trojan { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
+        location = /ss-ws { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
+        location ^~ /vmess/ { grpc_pass grpc://127.0.0.1:10002; }
+        location ^~ /vmess-grpc/ { grpc_pass grpc://127.0.0.1:10002; }
+        location ^~ /vless/ { grpc_pass grpc://127.0.0.1:10005; }
+        location ^~ /vless-grpc/ { grpc_pass grpc://127.0.0.1:10005; }
+        location ^~ /trojan/ { grpc_pass grpc://127.0.0.1:10008; }
+        location ^~ /trojan-grpc/ { grpc_pass grpc://127.0.0.1:10008; }
+        location ^~ /ss-grpc/ { grpc_pass grpc://127.0.0.1:10011; }
+
+        # WebSocket + HTTP-Upgrade fallback ke WS-Bridge (SSH dan Xray WS/Upgrade)
+        location / {
+            proxy_pass http://127.0.0.1:10015;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_read_timeout 86400s;
+            proxy_send_timeout 86400s;
+            proxy_buffering off;
+        }
+    }
+}
+EONGX_STREAM
+ > /etc/nginx/nginx.conf
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+include /etc/nginx/modules-enabled/*.conf;
+
+events {
+    worker_connections 4096;
+    multi_accept on;
+}
+
+stream {
     map $ssl_preread_alpn_protocols $tls_backend {
         "h2"     127.0.0.1:10443;
         default  127.0.0.1:10444;
@@ -8821,6 +8931,10 @@ stream {
 }
 
 http {
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
+    }
     sendfile on;
     tcp_nopush on;
     tcp_nodelay on;
@@ -8845,6 +8959,18 @@ http {
         location ^~ /vless/ { grpc_pass grpc://127.0.0.1:10005; }
         location ^~ /trojan/ { grpc_pass grpc://127.0.0.1:10008; }
         location ^~ /ss-grpc/ { grpc_pass grpc://127.0.0.1:10011; }
+        # Fallback WebSocket + HTTP-Upgrade ke WS-Bridge (SSH + Xray WS/httpupgrade)
+        location / {
+            proxy_pass http://127.0.0.1:10015;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_read_timeout 86400s;
+            proxy_send_timeout 86400s;
+            proxy_buffering off;
+        }
     }
 }
 EONGX_STREAM
