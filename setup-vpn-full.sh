@@ -7761,13 +7761,13 @@ async def unlock_and_expiry_worker():
                             _lbl = "SSH/Dropbear/OpenVPN Account Expired"
                         else:
                             _lbl = f"{_proto.upper()} Account Expired"
-                        _lines = "\\n".join(f"✓ {_r['username']} | {_exp_str}" for _r in _rows)
+                        _lines = "\n".join(f"✓ {_r['username']} | {_exp_str}" for _r in _rows)
                         _grp_txt = (
-                            f"<code>DOMAIN : {html.escape(_host)}\\n"
-                            f"ISP    : {html.escape(_isp)}</code>\\n"
-                            f"<blockquote><b>{_lbl}</b></blockquote>\\n"
-                            f"{_lines}\\n"
-                            f"❀ ━━━━━━━━━━━━━━━ ❀\\n"
+                            f"<code>DOMAIN : {html.escape(_host)}\n"
+                            f"ISP    : {html.escape(_isp)}</code>\n"
+                            f"<blockquote><b>{_lbl}</b></blockquote>\n"
+                            f"{_lines}\n"
+                            f"❀ ━━━━━━━━━━━━━━━ ❀\n"
                             f"<b>Total : {len(_rows)}</b>"
                         )
                         _grp_id = get_setting("group_chat_id", "").strip()
@@ -7781,13 +7781,13 @@ async def unlock_and_expiry_worker():
                             try:
                                 await bot.send_message(
                                     _r["user_id"],
-                                    f"🔴 <b>AKUN EXPIRED</b> 🔴\\n"
-                                    f"❀ ━━━━━━━━━━━━━━━ ❀\\n"
-                                    f"👤 <b>Username</b>: <code>{html.escape(_r['username'])}</code>\\n"
-                                    f"⚡ <b>Protokol</b>: {_proto.upper()}\\n"
-                                    f"🌐 <b>Server</b>  : <code>{html.escape(_host)}</code>\\n"
-                                    f"📅 <b>Expired</b> : {_exp_str}\\n"
-                                    f"❀ ━━━━━━━━━━━━━━━ ❀\\n"
+                                    f"🔴 <b>AKUN EXPIRED</b> 🔴\n"
+                                    f"❀ ━━━━━━━━━━━━━━━ ❀\n"
+                                    f"👤 <b>Username</b>: <code>{html.escape(_r['username'])}</code>\n"
+                                    f"⚡ <b>Protokol</b>: {_proto.upper()}\n"
+                                    f"🌐 <b>Server</b>  : <code>{html.escape(_host)}</code>\n"
+                                    f"📅 <b>Expired</b> : {_exp_str}\n"
+                                    f"❀ ━━━━━━━━━━━━━━━ ❀\n"
                                     f"💬 Hubungi admin untuk perpanjang.",
                                     parse_mode="HTML"
                                 )
