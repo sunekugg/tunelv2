@@ -3165,7 +3165,7 @@ def init_db():
             "welcome_text": "", "welcome_photo": "", "login_report_enabled": "0", "login_report_interval_min": "60", "login_topic_id": "0", "login_report_mask": "0", "login_report_show_ip": "1", "prefix_enabled": "1", "account_prefix": "sunek", "bot_theme": "default", "auto_heal_enabled": "1", "notif_server_status": "1",
             "bot_status": "1", "lock_enabled": "1", "lock_duration_min": "5",
             "lock_strikes": "1", "lock_tiered": "1", "default_days": "7",
-            "trial_minutes": "30", "default_ip_limit": "2", "default_quota_gb": "50",
+            "trial_minutes": "30", "default_ip_limit": "0", "default_quota_gb": "50",
             "default_speed_mbps": "0", "max_users_per_vps": "100", "user_create_max": "1",
             "user_create_days": "3", "trial_create_max": "3", "notif_create_group": "1",
             "force_join_chat": "", "force_join_link": "", "group_chat_id": "", "group_topic_id": "0",
