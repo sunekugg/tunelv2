@@ -1106,9 +1106,10 @@ def scan_active_sessions():
 
         real_ip = peer_ip
         if peer_ip.startswith("127.") or peer_ip == "::1":
-            real_ip = port_to_ip.get(peer_port, peer_ip)
+            real_ip = port_to_ip.get(peer_port, "")
 
-        if real_ip:
+        # Loopback tanpa mapping = tunnel lokal/WS bridge, bukan IP client. Skip.
+        if real_ip and not real_ip.startswith("127.") and real_ip != "::1":
             info = results.setdefault(uname, {"ips": set(), "sessions": 0, "last_ip": real_ip})
             info["ips"].add(real_ip)
             info["sessions"] += 1
@@ -7637,7 +7638,8 @@ async def scanner_multi_login_worker():
                         ips = sorted(list(active_map[uname]["ips"]))
                         sess_cnt = active_map[uname]["sessions"]
                         conn.execute("UPDATE accounts SET last_ips=?, active_sessions=? WHERE id=?", (",".join(ips), sess_cnt, acc["id"]))
-                        if lock_en and acc["locked_until"] <= now and len(ips) > acc["ip_limit"]:
+                        eff_limit = int(acc["ip_limit"]) if acc["ip_limit"] is not None else get_int_setting("default_ip_limit", 2, 0)
+                        if lock_en and eff_limit > 0 and acc["locked_until"] <= now and len(ips) > eff_limit:
                             new_strike = acc["strike_count"] + 1
                             if new_strike >= max_strikes:
                                 v_level = acc["violation_level"] + 1
