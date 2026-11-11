@@ -8441,20 +8441,36 @@ for _BINCHK in vaydns-server udpgw udp-custom; do
     fi
 done
 # --- udp-custom ---
-if ! head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
-    rm -f /usr/local/bin/udp-custom
-    UC_URL="https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
+UC_BIN=/usr/local/bin/udp-custom
+UC_OK=0
+if ! head -c4 "$UC_BIN" 2>/dev/null | grep -q $'\x7fELF'; then
+    rm -f "$UC_BIN"
+    UC_LIST=(
+        "https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
+        "https://ghfast.top/https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
+        "https://gh-proxy.com/https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
+        "https://github.com/http-custom/udp-custom/releases/latest/download/udp-custom-linux-amd64"
+        "https://ghfast.top/https://github.com/http-custom/udp-custom/releases/latest/download/udp-custom-linux-amd64"
+    )
     if [[ "$XARCH" == "arm64" ]]; then
-        UC_URL="https://raw.githubusercontent.com/fisabiliyusri/Mantap/main/udp-custom/udp-custom-linux-arm"
+        UC_LIST=(
+            "https://raw.githubusercontent.com/fisabiliyusri/Mantap/main/udp-custom/udp-custom-linux-arm"
+            "https://ghfast.top/https://raw.githubusercontent.com/fisabiliyusri/Mantap/main/udp-custom/udp-custom-linux-arm"
+        )
     fi
-    wget -qO /usr/local/bin/udp-custom "$UC_URL" 2>/dev/null || true
-    if ! head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
-        rm -f /usr/local/bin/udp-custom
-        curl -sf -o /usr/local/bin/udp-custom \
-            "https://github.com/http-custom/udp-custom/releases/latest/download/udp-custom-linux-amd64" 2>/dev/null || true
-    fi
-    chmod +x /usr/local/bin/udp-custom 2>/dev/null || true
+    for _UCURL in "${UC_LIST[@]}"; do
+        wget -qO "$UC_BIN" "$_UCURL" 2>/dev/null || true
+        if [[ -s "$UC_BIN" ]] && head -c4 "$UC_BIN" 2>/dev/null | grep -q $'\x7fELF'; then
+            echo "  -> udp-custom diunduh dari: $_UCURL"
+            UC_OK=1; break
+        fi
+        rm -f "$UC_BIN"
+    done
+    chmod +x "$UC_BIN" 2>/dev/null || true
+else
+    UC_OK=1
 fi
+# --- systemd-resolved: matikan agar :53 bebas ---
 # --- systemd-resolved: matikan agar :53 bebas ---
 systemctl stop systemd-resolved 2>/dev/null || true
 systemctl disable systemd-resolved 2>/dev/null || true
@@ -8553,7 +8569,12 @@ ExecStart=/etc/iptables/apply-slowdns-udp.sh
 WantedBy=multi-user.target
 IPTSVC
 systemctl daemon-reload
-systemctl enable --now slowdns udp-custom udpgw iptables-restore >/dev/null 2>&1 || true
+systemctl enable --now slowdns udpgw iptables-restore >/dev/null 2>&1 || true
+if [[ -x /usr/local/bin/udp-custom ]] && head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
+    systemctl enable --now udp-custom >/dev/null 2>&1 || true
+else
+    systemctl disable --now udp-custom >/dev/null 2>&1 || true
+fi
 
 ufw allow 22/tcp >/dev/null 2>&1 || true
 ufw allow 53/udp >/dev/null 2>&1 || true
@@ -8602,7 +8623,11 @@ for srv in xray dropbear nginx vpn-ws-bridge vpn-proto-daemons vpn-telegram-bot;
 done
 echo "-----------------------------------------------------------------------"
 echo " SlowDNS VayDNS  : UDP/TCP 53 (vaydns multi-record: TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA)"
-echo " UDP-Custom      : UDP 36712 (udp-custom)"
+if [[ -x /usr/local/bin/udp-custom ]] && head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
+    echo " UDP-Custom      : UDP 36712 (udp-custom: active)"
+else
+    echo " UDP-Custom      : TIDAK TERPASANG (unduh gagal — jalankan ulang installer bila perlu)"
+fi
 echo " PUB KEY        : $(cat /etc/vpn-bot/id_ed25519.pub 2>/dev/null || echo '-')"
 echo "========================================================================"
 """)
@@ -9364,20 +9389,36 @@ for _BINCHK in vaydns-server udpgw udp-custom; do
     fi
 done
 # --- udp-custom ---
-if ! head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
-    rm -f /usr/local/bin/udp-custom
-    UC_URL="https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
+UC_BIN=/usr/local/bin/udp-custom
+UC_OK=0
+if ! head -c4 "$UC_BIN" 2>/dev/null | grep -q $'\x7fELF'; then
+    rm -f "$UC_BIN"
+    UC_LIST=(
+        "https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
+        "https://ghfast.top/https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
+        "https://gh-proxy.com/https://raw.githubusercontent.com/http-custom/udp-custom/main/bin/udp-custom-linux-amd64"
+        "https://github.com/http-custom/udp-custom/releases/latest/download/udp-custom-linux-amd64"
+        "https://ghfast.top/https://github.com/http-custom/udp-custom/releases/latest/download/udp-custom-linux-amd64"
+    )
     if [[ "$XARCH" == "arm64" ]]; then
-        UC_URL="https://raw.githubusercontent.com/fisabiliyusri/Mantap/main/udp-custom/udp-custom-linux-arm"
+        UC_LIST=(
+            "https://raw.githubusercontent.com/fisabiliyusri/Mantap/main/udp-custom/udp-custom-linux-arm"
+            "https://ghfast.top/https://raw.githubusercontent.com/fisabiliyusri/Mantap/main/udp-custom/udp-custom-linux-arm"
+        )
     fi
-    wget -qO /usr/local/bin/udp-custom "$UC_URL" 2>/dev/null || true
-    if ! head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
-        rm -f /usr/local/bin/udp-custom
-        curl -sf -o /usr/local/bin/udp-custom \
-            "https://github.com/http-custom/udp-custom/releases/latest/download/udp-custom-linux-amd64" 2>/dev/null || true
-    fi
-    chmod +x /usr/local/bin/udp-custom 2>/dev/null || true
+    for _UCURL in "${UC_LIST[@]}"; do
+        wget -qO "$UC_BIN" "$_UCURL" 2>/dev/null || true
+        if [[ -s "$UC_BIN" ]] && head -c4 "$UC_BIN" 2>/dev/null | grep -q $'\x7fELF'; then
+            echo "  -> udp-custom diunduh dari: $_UCURL"
+            UC_OK=1; break
+        fi
+        rm -f "$UC_BIN"
+    done
+    chmod +x "$UC_BIN" 2>/dev/null || true
+else
+    UC_OK=1
 fi
+# --- systemd-resolved: matikan agar :53 bebas ---
 # --- systemd-resolved: matikan agar :53 bebas ---
 systemctl stop systemd-resolved 2>/dev/null || true
 systemctl disable systemd-resolved 2>/dev/null || true
@@ -9476,7 +9517,12 @@ ExecStart=/etc/iptables/apply-slowdns-udp.sh
 WantedBy=multi-user.target
 IPTSVC
 systemctl daemon-reload
-systemctl enable --now slowdns udp-custom udpgw iptables-restore >/dev/null 2>&1 || true
+systemctl enable --now slowdns udpgw iptables-restore >/dev/null 2>&1 || true
+if [[ -x /usr/local/bin/udp-custom ]] && head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
+    systemctl enable --now udp-custom >/dev/null 2>&1 || true
+else
+    systemctl disable --now udp-custom >/dev/null 2>&1 || true
+fi
 
 ufw allow 22/tcp >/dev/null 2>&1 || true
 ufw allow 53/udp >/dev/null 2>&1 || true
@@ -9525,6 +9571,10 @@ for srv in xray dropbear nginx vpn-ws-bridge vpn-proto-daemons vpn-telegram-bot;
 done
 echo "-----------------------------------------------------------------------"
 echo " SlowDNS VayDNS  : UDP/TCP 53 (vaydns multi-record: TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA)"
-echo " UDP-Custom      : UDP 36712 (udp-custom)"
+if [[ -x /usr/local/bin/udp-custom ]] && head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
+    echo " UDP-Custom      : UDP 36712 (udp-custom: active)"
+else
+    echo " UDP-Custom      : TIDAK TERPASANG (unduh gagal — jalankan ulang installer bila perlu)"
+fi
 echo " PUB KEY        : $(cat /etc/vpn-bot/id_ed25519.pub 2>/dev/null || echo '-')"
 echo "========================================================================"
