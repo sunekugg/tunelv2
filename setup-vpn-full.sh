@@ -7717,6 +7717,7 @@ async def unlock_and_expiry_worker():
                     "SELECT * FROM accounts WHERE expired_at > 0 AND expired_at < 4000000000 AND expired_at <= ?",
                     (now,)
                 ).fetchall()
+                removed_groups = {}
                 for r in expired_rows:
                     if r["is_trial"] == 0 and global_days_lim == 0:
                         conn.execute("UPDATE accounts SET expired_at=4102444800 WHERE id=?", (r["id"],))
@@ -7724,8 +7725,53 @@ async def unlock_and_expiry_worker():
                     target_srv = srv_map.get(r["server_id"])
                     await asyncio.to_thread(engine.remove_account_from_server, target_srv, r["protocol"], r["username"])
                     conn.execute("DELETE FROM accounts WHERE id=?", (r["id"],))
+                    _s = srv_map.get(r["server_id"])
+                    _key = (r["protocol"], _s["host"] if _s else "-", _s["ip"] if _s else "-",
+                            _s["isp"] if _s else "-", r["expired_at"])
+                    removed_groups.setdefault(_key, []).append(r)
                 if expired_rows:
                     conn.commit()
+                    # === NOTIFIKASI AKUN EXPIRED (grup + personal) ===
+                    for (_proto, _host, _ip, _isp, _exp), _rows in removed_groups.items():
+                        _exp_str = time.strftime("%Y-%m-%d", time.gmtime(int(_exp) + 7 * 3600))
+                        if _proto == "ssh":
+                            _lbl = "SSH/Dropbear/OpenVPN Account Expired"
+                        else:
+                            _lbl = f"{_proto.upper()} Account Expired"
+                        _lines = "\\n".join(f"✓ {_r['username']} | {_exp_str}" for _r in _rows)
+                        _grp_txt = (
+                            f"<code>IP     : {html.escape(_ip)}\\n"
+                            f"DOMAIN : {html.escape(_host)}\\n"
+                            f"ISP    : {html.escape(_isp)}</code>\\n"
+                            f"<blockquote><b>{_lbl}</b></blockquote>\\n"
+                            f"{_lines}\\n"
+                            f"❀ ━━━━━━━━━━━━━━━ ❀\\n"
+                            f"<b>Total : {len(_rows)}</b>"
+                        )
+                        _grp_id = get_setting("group_chat_id", "").strip()
+                        if _grp_id:
+                            try:
+                                await bot.send_message(int(_grp_id), _grp_txt, parse_mode="HTML",
+                                                       disable_web_page_preview=True)
+                            except Exception:
+                                pass
+                        for _r in _rows:
+                            try:
+                                await bot.send_message(
+                                    _r["user_id"],
+                                    f"🔴 <b>AKUN EXPIRED</b> 🔴\\n"
+                                    f"❀ ━━━━━━━━━━━━━━━ ❀\\n"
+                                    f"👤 <b>Username</b>: <code>{html.escape(_r['username'])}</code>\\n"
+                                    f"⚡ <b>Protokol</b>: {_proto.upper()}\\n"
+                                    f"🌐 <b>Server</b>  : <code>{html.escape(_host)}</code>\\n"
+                                    f"📅 <b>Expired</b> : {_exp_str}\\n"
+                                    f"❀ ━━━━━━━━━━━━━━━ ❀\\n"
+                                    f"💬 Hubungi admin untuk perpanjang.",
+                                    parse_mode="HTML"
+                                )
+                            except Exception:
+                                pass
+                        log_activity("EXPIRED_NOTIFY", f"{len(_rows)} akun {_proto.upper()} expired di {_host} (notifikasi terkirim)")
 
                 # 2. AUTO-UNLOCK + AUTO-SINKRONISASI PASSWORD SSH / UUID XRAY OTOMATIS
                 #    Jika global_ip_lim == 0 (Unlimited IP), buka juga seluruh akun yang sedang terkunci!
