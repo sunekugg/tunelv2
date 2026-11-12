@@ -21,17 +21,36 @@ if [[ -z "$BOT_TOKEN" || -z "$ADMIN_ID" || -z "$DOMAIN" ]]; then
     exit 1
 fi
 
-# 0. Pre-flight: pastikan DNS & akses GitHub jalan SEBELUM apa pun (apt butuh DNS)
-echo "[0/6] Pre-flight: cek DNS & akses GitHub..."
-if ! getent hosts github.com >/dev/null 2>&1; then
+# 0. Pre-flight: DNS, IPv6-route, dan MIRROR APT (semua provider & semua versi OS)
+echo "[0/6] Pre-flight: cek DNS, IPv6 & mirror apt..."
+. /etc/os-release 2>/dev/null || true
+OS_ID="${ID:-ubuntu}"; OS_CODENAME="${VERSION_CODENAME:-}"
+[[ -z "$OS_CODENAME" ]] && OS_CODENAME=$(awk -F'[ (]' '/^deb /{print $3; exit}' /etc/apt/sources.list 2>/dev/null)
+
+# Cek mirror BENAR: harus balas file Release berisi Origin/Label/Codename (bukan sekadar 200)
+mirror_valid() {
+    local url="$1" code body
+    [[ -z "$url" ]] && return 1
+    code=$(curl -4 -s -m 8 -o /tmp/.aptrel -w "%{http_code}" "$url/dists/${OS_CODENAME}/Release" 2>/dev/null || echo 000)
+    [[ "$code" == "200" ]] || return 1
+    body=$(head -c 400 /tmp/.aptrel 2>/dev/null)
+    rm -f /tmp/.aptrel
+    grep -qE '^(Origin|Label|Suite|Codename):' <<<"$body" || return 1
+    # Pastikan codename cocok (cegah mirror beda distro)
+    grep -qiE "^(Suite|Codename):[[:space:]]*${OS_CODENAME}" <<<"$body" || return 1
+    return 0
+}
+
+# 0a. DNS dasar (paksa IPv4: AAAA sering menyesatkan di VPS tanpa route IPv6)
+if ! getent ahostsv4 github.com >/dev/null 2>&1; then
     echo "  DNS gagal resolve — coba perbaiki resolv.conf..."
     printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
     sleep 1
-    if ! getent hosts github.com >/dev/null 2>&1; then
+    if ! getent ahostsv4 github.com >/dev/null 2>&1; then
         echo "  Masih gagal — coba DNS over TCP (provider blok UDP 53)..."
         apt-get install -y -qq dnsutils >/dev/null 2>&1 || true
         if command -v dig >/dev/null && dig +tcp @1.1.1.1 github.com A +short 2>/dev/null | grep -q .; then
-            echo "  DNS via TCP jalan — pasang dnsmasq sebagai forwarder lokal (fallback TCP otomatis)..."
+            echo "  DNS via TCP jalan — pasang dnsmasq sebagai forwarder lokal..."
             apt-get install -y -qq dnsmasq >/dev/null 2>&1 || true
             if command -v dnsmasq >/dev/null; then
                 printf 'server=1.1.1.1\nserver=8.8.8.8\nno-resolv\nport=53\n' > /etc/dnsmasq.d/vpn-fwd.conf
@@ -41,19 +60,60 @@ if ! getent hosts github.com >/dev/null 2>&1; then
             fi
         fi
     fi
-    if ! getent hosts github.com >/dev/null 2>&1; then
+    if ! getent ahostsv4 github.com >/dev/null 2>&1; then
         echo "========================================================================"
         echo "  GAGAL PRE-FLIGHT: DNS tidak berfungsi (kemungkinan provider blok UDP 53)."
         echo "  Installer butuh DNS untuk apt. Perbaiki DNS dulu, lalu jalankan ulang."
         echo "  Cek manual : dig @1.1.1.1 github.com +short"
-        echo "  Alternatif : pasang unbound/dnscrypt-proxy dengan DNS-over-HTTPS"
         echo "========================================================================"
         exit 1
     fi
 fi
-if ! curl -sfI --max-time 10 https://raw.githubusercontent.com/sunekugg/tunelv2/main/setup-vpn-full.sh >/dev/null 2>&1 \
-   && ! wget -q --spider --timeout=10 https://raw.githubusercontent.com/sunekugg/tunelv2/main/setup-vpn-full.sh 2>/dev/null; then
-    echo "  PERINGATAN: akses raw.githubusercontent.com gagal — download binary nanti pakai fallback IP statis."
+
+# 0b. IPv6: DNS balas AAAA padahal VPS tanpa route IPv6 -> apt/curl hang.
+printf "precedence ::ffff:0:0/96  100\n" > /etc/gai.conf
+if ! ip -6 route show default 2>/dev/null | grep -q .; then
+    printf "net.ipv6.conf.all.disable_ipv6 = 1\nnet.ipv6.conf.default.disable_ipv6 = 1\n" > /etc/sysctl.d/99-vpn-noipv6.conf
+    sysctl -p /etc/sysctl.d/99-vpn-noipv6.conf >/dev/null 2>&1 || true
+    echo "  IPv6 tanpa route -> dimatikan (cegah apt/curl hang)."
+fi
+
+# 0c. Mirror apt rusak (mis. mirrors.tencentyun.com -> 169.254.0.3, tanpa DNS valid)
+CUR_MIRROR=$(awk '/^deb /{for(i=1;i<=NF;i++) if($i ~ /^https?:\/\//){print $i; exit}}' /etc/apt/sources.list 2>/dev/null; \
+             grep -hoE 'https?://[^ /]+' /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null | sort -u | head -1)
+CUR_MIRROR=$(echo "$CUR_MIRROR" | head -1 | sed 's#/$##')
+if ! mirror_valid "$CUR_MIRROR"; then
+    echo "  Mirror rusak/tidak valid: ${CUR_MIRROR:-<kosong>} -> cari pengganti..."
+    if [[ "$OS_ID" == "debian" ]]; then
+        CANDIDATES=("http://deb.debian.org/debian" "http://ftp.debian.org/debian" "https://mirrors.aliyun.com/debian" "https://mirrors.tuna.tsinghua.edu.cn/debian")
+    else
+        CANDIDATES=("http://archive.ubuntu.com/ubuntu" "http://security.ubuntu.com/ubuntu" "https://mirrors.aliyun.com/ubuntu" "http://azure.archive.ubuntu.com/ubuntu" "http://mirror.kakao.com/ubuntu")
+    fi
+    CHOSEN=""
+    for c in "${CANDIDATES[@]}"; do
+        if mirror_valid "$c"; then CHOSEN="$c"; break; fi
+    done
+    if [[ -n "$CHOSEN" ]]; then
+        echo "  Mirror pengganti: $CHOSEN"
+        if [[ "$OS_ID" == "debian" ]]; then
+            printf "deb %s %s main contrib non-free\ndeb %s %s-updates main contrib non-free\ndeb %s %s-security main contrib non-free\n" \
+                "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" > /etc/apt/sources.list
+        else
+            SEC="http://security.ubuntu.com/ubuntu"
+            mirror_valid "$SEC" || SEC="$CHOSEN"
+            printf "deb %s %s main restricted universe multiverse\ndeb %s %s-updates main restricted universe multiverse\ndeb %s %s-security main restricted universe multiverse\n" \
+                "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" "$SEC" "$OS_CODENAME" > /etc/apt/sources.list
+        fi
+    else
+        echo "  PERINGATAN: semua mirror gagal diverifikasi — lanjut apa adanya."
+    fi
+    for f in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+        [[ -f "$f" ]] || continue
+        if grep -qE 'tencentyun|169\.254\.' "$f" 2>/dev/null; then
+            mv -f "$f" "$f.disabled" 2>/dev/null || true
+            echo "  Dinonaktifkan: $(basename "$f")"
+        fi
+    done
 fi
 echo "  Pre-flight OK."
 
@@ -125,23 +185,29 @@ fi
 
 # 2. Instalasi Paket Dasar (Support Ubuntu <= 24.04 & Debian <= 13)
 echo "[2/6] Menginstal paket sistem & dependensi..."
-apt-get update -y -o DPkg::Lock::Timeout=120
-apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o DPkg::Lock::Timeout=120 \
+apt-get -o Acquire::ForceIPv4=true update -y -o DPkg::Lock::Timeout=120
+apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o DPkg::Lock::Timeout=120 \
     curl wget jq git unzip tar socat cron net-tools lsof psmisc \
     iptables iptables-persistent netfilter-persistent fail2ban certbot \
     nginx openssh-server dropbear squid openvpn easy-rsa \
     build-essential zlib1g-dev bzip2 python3 python3-pip python3-venv \
     sqlite3 bc vnstat wondershaper logrotate qrencode openssl >/dev/null 2>&1 || true
-apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     libnginx-mod-stream >/dev/null 2>&1 || \
-apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     nginx-full >/dev/null 2>&1 || true
-apt-get install -y -o DPkg::Lock::Timeout=60 libcrypt-dev python3-full >/dev/null 2>&1 || true
+apt-get -o Acquire::ForceIPv4=true install -y -o DPkg::Lock::Timeout=60 libcrypt-dev python3-full >/dev/null 2>&1 || true
 
 PUBLIC_IP=$(curl -s4 --max-time 5 ifconfig.me || curl -s4 --max-time 5 api.ipify.org || echo "127.0.0.1")
-GEO_JSON=$(curl -s --max-time 5 https://ipinfo.io/json || echo "{}")
-VPS_CITY=$(echo "$GEO_JSON" | jq -r '.city // "Singapore"')
-VPS_ISP=$(echo "$GEO_JSON" | jq -r '.org // "Cloud ISP"' | sed 's/^AS[0-9]* //')
+GEO_JSON=$(curl -4 -s --max-time 5 https://ipinfo.io/json || echo "{}")
+# jq belum tentu terpasang (mirror rusak) -> fallback python3
+if command -v jq >/dev/null 2>&1; then
+    VPS_CITY=$(echo "$GEO_JSON" | jq -r '.city // "Singapore"')
+    VPS_ISP=$(echo "$GEO_JSON" | jq -r '.org // "Cloud ISP"' | sed 's/^AS[0-9]* //')
+else
+    VPS_CITY=$(echo "$GEO_JSON" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('city') or 'Singapore')" 2>/dev/null || echo "Singapore")
+    VPS_ISP=$(echo "$GEO_JSON" | python3 -c "import sys,json,re;d=json.load(sys.stdin);print(re.sub(r'^AS[0-9]+\\s+','',d.get('org') or 'Cloud ISP'))" 2>/dev/null || echo "Cloud ISP")
+fi
 
 cat << EOC > /etc/vpn-bot/config.env
 BOT_TOKEN="$BOT_TOKEN"
@@ -1620,7 +1686,7 @@ def provision_remote_vps(srv_row):
         install_cmd = (
             "nohup bash -c '"
             "export DEBIAN_FRONTEND=noninteractive; "
-            "apt-get update -y && apt-get install -y curl wget jq unzip nginx libnginx-mod-stream openssh-server dropbear python3 wondershaper vnstat >/dev/null 2>&1; "
+            "apt-get -o Acquire::ForceIPv4=true update -y && apt-get -o Acquire::ForceIPv4=true install -y curl wget jq unzip nginx libnginx-mod-stream openssh-server dropbear python3 wondershaper vnstat >/dev/null 2>&1; "
             "sed -i \"/^Banner /d\" /etc/ssh/sshd_config; echo \"Banner /etc/issue.net\" >> /etc/ssh/sshd_config; "
             "systemctl restart ssh || systemctl restart sshd; "
             "chmod +x /etc/vpn-bot/*.py 2>/dev/null; "
@@ -8388,39 +8454,99 @@ if [[ -z "$BOT_TOKEN" || -z "$ADMIN_ID" || -z "$DOMAIN" ]]; then
     exit 1
 fi
 
-# 0. Pre-flight: pastikan DNS & akses GitHub jalan SEBELUM apa pun (apt butuh DNS)
-echo "[0/6] Pre-flight: cek DNS & akses GitHub..."
-if ! getent hosts github.com >/dev/null 2>&1; then
+# 0. Pre-flight: DNS, IPv6-route, dan MIRROR APT (semua provider & semua versi OS)
+echo "[0/6] Pre-flight: cek DNS, IPv6 & mirror apt..."
+. /etc/os-release 2>/dev/null || true
+OS_ID="${ID:-ubuntu}"; OS_CODENAME="${VERSION_CODENAME:-}"
+[[ -z "$OS_CODENAME" ]] && OS_CODENAME=$(awk -F'[ (]' '/^deb /{print $3; exit}' /etc/apt/sources.list 2>/dev/null)
+
+# Cek mirror BENAR: harus balas file Release berisi Origin/Label/Codename (bukan sekadar 200)
+mirror_valid() {
+    local url="$1" code body
+    [[ -z "$url" ]] && return 1
+    code=$(curl -4 -s -m 8 -o /tmp/.aptrel -w "%{http_code}" "$url/dists/${OS_CODENAME}/Release" 2>/dev/null || echo 000)
+    [[ "$code" == "200" ]] || return 1
+    body=$(head -c 400 /tmp/.aptrel 2>/dev/null)
+    rm -f /tmp/.aptrel
+    grep -qE '^(Origin|Label|Suite|Codename):' <<<"$body" || return 1
+    # Pastikan codename cocok (cegah mirror beda distro)
+    grep -qiE "^(Suite|Codename):[[:space:]]*${OS_CODENAME}" <<<"$body" || return 1
+    return 0
+}
+
+# 0a. DNS dasar (paksa IPv4: AAAA sering menyesatkan di VPS tanpa route IPv6)
+if ! getent ahostsv4 github.com >/dev/null 2>&1; then
     echo "  DNS gagal resolve — coba perbaiki resolv.conf..."
-    printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
+    printf "nameserver 1.1.1.1\\nnameserver 8.8.8.8\\n" > /etc/resolv.conf
     sleep 1
-    if ! getent hosts github.com >/dev/null 2>&1; then
+    if ! getent ahostsv4 github.com >/dev/null 2>&1; then
         echo "  Masih gagal — coba DNS over TCP (provider blok UDP 53)..."
         apt-get install -y -qq dnsutils >/dev/null 2>&1 || true
         if command -v dig >/dev/null && dig +tcp @1.1.1.1 github.com A +short 2>/dev/null | grep -q .; then
-            echo "  DNS via TCP jalan — pasang dnsmasq sebagai forwarder lokal (fallback TCP otomatis)..."
+            echo "  DNS via TCP jalan — pasang dnsmasq sebagai forwarder lokal..."
             apt-get install -y -qq dnsmasq >/dev/null 2>&1 || true
             if command -v dnsmasq >/dev/null; then
-                printf 'server=1.1.1.1\nserver=8.8.8.8\nno-resolv\nport=53\n' > /etc/dnsmasq.d/vpn-fwd.conf
+                printf 'server=1.1.1.1\\nserver=8.8.8.8\\nno-resolv\\nport=53\\n' > /etc/dnsmasq.d/vpn-fwd.conf
                 systemctl restart dnsmasq 2>/dev/null || true
-                printf "nameserver 127.0.0.1\n" > /etc/resolv.conf
+                printf "nameserver 127.0.0.1\\n" > /etc/resolv.conf
                 sleep 1
             fi
         fi
     fi
-    if ! getent hosts github.com >/dev/null 2>&1; then
+    if ! getent ahostsv4 github.com >/dev/null 2>&1; then
         echo "========================================================================"
         echo "  GAGAL PRE-FLIGHT: DNS tidak berfungsi (kemungkinan provider blok UDP 53)."
         echo "  Installer butuh DNS untuk apt. Perbaiki DNS dulu, lalu jalankan ulang."
         echo "  Cek manual : dig @1.1.1.1 github.com +short"
-        echo "  Alternatif : pasang unbound/dnscrypt-proxy dengan DNS-over-HTTPS"
         echo "========================================================================"
         exit 1
     fi
 fi
-if ! curl -sfI --max-time 10 https://raw.githubusercontent.com/sunekugg/tunelv2/main/setup-vpn-full.sh >/dev/null 2>&1 \
-   && ! wget -q --spider --timeout=10 https://raw.githubusercontent.com/sunekugg/tunelv2/main/setup-vpn-full.sh 2>/dev/null; then
-    echo "  PERINGATAN: akses raw.githubusercontent.com gagal — download binary nanti pakai fallback IP statis."
+
+# 0b. IPv6: DNS balas AAAA padahal VPS tanpa route IPv6 -> apt/curl hang.
+printf "precedence ::ffff:0:0/96  100\\n" > /etc/gai.conf
+if ! ip -6 route show default 2>/dev/null | grep -q .; then
+    printf "net.ipv6.conf.all.disable_ipv6 = 1\\nnet.ipv6.conf.default.disable_ipv6 = 1\\n" > /etc/sysctl.d/99-vpn-noipv6.conf
+    sysctl -p /etc/sysctl.d/99-vpn-noipv6.conf >/dev/null 2>&1 || true
+    echo "  IPv6 tanpa route -> dimatikan (cegah apt/curl hang)."
+fi
+
+# 0c. Mirror apt rusak (mis. mirrors.tencentyun.com -> 169.254.0.3, tanpa DNS valid)
+CUR_MIRROR=$(awk '/^deb /{for(i=1;i<=NF;i++) if($i ~ /^https?:\\/\\//){print $i; exit}}' /etc/apt/sources.list 2>/dev/null; \\
+             grep -hoE 'https?://[^ /]+' /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null | sort -u | head -1)
+CUR_MIRROR=$(echo "$CUR_MIRROR" | head -1 | sed 's#/$##')
+if ! mirror_valid "$CUR_MIRROR"; then
+    echo "  Mirror rusak/tidak valid: ${CUR_MIRROR:-<kosong>} -> cari pengganti..."
+    if [[ "$OS_ID" == "debian" ]]; then
+        CANDIDATES=("http://deb.debian.org/debian" "http://ftp.debian.org/debian" "https://mirrors.aliyun.com/debian" "https://mirrors.tuna.tsinghua.edu.cn/debian")
+    else
+        CANDIDATES=("http://archive.ubuntu.com/ubuntu" "http://security.ubuntu.com/ubuntu" "https://mirrors.aliyun.com/ubuntu" "http://azure.archive.ubuntu.com/ubuntu" "http://mirror.kakao.com/ubuntu")
+    fi
+    CHOSEN=""
+    for c in "${CANDIDATES[@]}"; do
+        if mirror_valid "$c"; then CHOSEN="$c"; break; fi
+    done
+    if [[ -n "$CHOSEN" ]]; then
+        echo "  Mirror pengganti: $CHOSEN"
+        if [[ "$OS_ID" == "debian" ]]; then
+            printf "deb %s %s main contrib non-free\\ndeb %s %s-updates main contrib non-free\\ndeb %s %s-security main contrib non-free\\n" \\
+                "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" > /etc/apt/sources.list
+        else
+            SEC="http://security.ubuntu.com/ubuntu"
+            mirror_valid "$SEC" || SEC="$CHOSEN"
+            printf "deb %s %s main restricted universe multiverse\\ndeb %s %s-updates main restricted universe multiverse\\ndeb %s %s-security main restricted universe multiverse\\n" \\
+                "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" "$SEC" "$OS_CODENAME" > /etc/apt/sources.list
+        fi
+    else
+        echo "  PERINGATAN: semua mirror gagal diverifikasi — lanjut apa adanya."
+    fi
+    for f in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+        [[ -f "$f" ]] || continue
+        if grep -qE 'tencentyun|169\\.254\\.' "$f" 2>/dev/null; then
+            mv -f "$f" "$f.disabled" 2>/dev/null || true
+            echo "  Dinonaktifkan: $(basename "$f")"
+        fi
+    done
 fi
 echo "  Pre-flight OK."
 
@@ -8492,23 +8618,29 @@ fi
 
 # 2. Instalasi Paket Dasar (Support Ubuntu <= 24.04 & Debian <= 13)
 echo "[2/6] Menginstal paket sistem & dependensi..."
-apt-get update -y -o DPkg::Lock::Timeout=120
-apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o DPkg::Lock::Timeout=120 \\
+apt-get -o Acquire::ForceIPv4=true update -y -o DPkg::Lock::Timeout=120
+apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o DPkg::Lock::Timeout=120 \\
     curl wget jq git unzip tar socat cron net-tools lsof psmisc \\
     iptables iptables-persistent netfilter-persistent fail2ban certbot \\
     nginx openssh-server dropbear squid openvpn easy-rsa \\
     build-essential zlib1g-dev bzip2 python3 python3-pip python3-venv \\
     sqlite3 bc vnstat wondershaper logrotate qrencode openssl >/dev/null 2>&1 || true
-apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \\
+apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \\
     libnginx-mod-stream >/dev/null 2>&1 || \\
-apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \\
+apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \\
     nginx-full >/dev/null 2>&1 || true
-apt-get install -y -o DPkg::Lock::Timeout=60 libcrypt-dev python3-full >/dev/null 2>&1 || true
+apt-get -o Acquire::ForceIPv4=true install -y -o DPkg::Lock::Timeout=60 libcrypt-dev python3-full >/dev/null 2>&1 || true
 
 PUBLIC_IP=$(curl -s4 --max-time 5 ifconfig.me || curl -s4 --max-time 5 api.ipify.org || echo "127.0.0.1")
-GEO_JSON=$(curl -s --max-time 5 https://ipinfo.io/json || echo "{}")
-VPS_CITY=$(echo "$GEO_JSON" | jq -r '.city // "Singapore"')
-VPS_ISP=$(echo "$GEO_JSON" | jq -r '.org // "Cloud ISP"' | sed 's/^AS[0-9]* //')
+GEO_JSON=$(curl -4 -s --max-time 5 https://ipinfo.io/json || echo "{}")
+# jq belum tentu terpasang (mirror rusak) -> fallback python3
+if command -v jq >/dev/null 2>&1; then
+    VPS_CITY=$(echo "$GEO_JSON" | jq -r '.city // "Singapore"')
+    VPS_ISP=$(echo "$GEO_JSON" | jq -r '.org // "Cloud ISP"' | sed 's/^AS[0-9]* //')
+else
+    VPS_CITY=$(echo "$GEO_JSON" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('city') or 'Singapore')" 2>/dev/null || echo "Singapore")
+    VPS_ISP=$(echo "$GEO_JSON" | python3 -c "import sys,json,re;d=json.load(sys.stdin);print(re.sub(r'^AS[0-9]+\\s+','',d.get('org') or 'Cloud ISP'))" 2>/dev/null || echo "Cloud ISP")
+fi
 
 cat << EOC > /etc/vpn-bot/config.env
 BOT_TOKEN="$BOT_TOKEN"
@@ -9018,15 +9150,15 @@ if [[ "$VIRT_T" != "openvz" && "$VIRT_T" != "lxc" ]]; then
 fi
 
 # 4. Instalasi Paket secara Terpisah (Agar 1 paket gagal tidak menggagalkan Nginx)
-apt-get update -y -o DPkg::Lock::Timeout=60 >/dev/null 2>&1 || true
-apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+apt-get -o Acquire::ForceIPv4=true update -y -o DPkg::Lock::Timeout=60 >/dev/null 2>&1 || true
+apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     nginx libnginx-mod-stream >/dev/null 2>&1 || \
-apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     nginx-full >/dev/null 2>&1 || \
-apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     nginx >/dev/null 2>&1 || true
 
-apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
     curl wget unzip openssl python3 psmisc lsof socat net-tools vnstat wondershaper >/dev/null 2>&1 || true
 
 ufw disable >/dev/null 2>&1 || true
