@@ -30,9 +30,18 @@ OS_ID="${ID:-ubuntu}"; OS_CODENAME="${VERSION_CODENAME:-}"
 
 # Cek mirror BENAR: harus balas file Release berisi Origin/Label/Codename (bukan sekadar 200)
 mirror_valid() {
-    local url="$1" code body
+    local url="$1" suite="${2:-$OS_CODENAME}" code body host ip
     [[ -z "$url" ]] && return 1
-    code=$(curl -4 -s -m 8 -o /tmp/.aptrel -w "%{http_code}" "$url/dists/${OS_CODENAME}/Release" 2>/dev/null || echo 000)
+    # Tolak hostname yang resolve ke IP link-local / private: khas mirror
+    # internal provider yang sudah mati (mirrors.tencentyun.com -> 169.254.0.3).
+    host=$(printf "%s" "$url" | sed -E 's#^[a-z]+://##; s#/.*##; s#:[0-9]+$##')
+    ip=$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR==1{print $1}')
+    [[ -z "$ip" ]] && return 1
+    case "$ip" in
+        169.254.*|10.*|127.*|0.*) return 1 ;;
+        192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 1 ;;
+    esac
+    code=$(curl -4 -s -m 8 --connect-timeout 5 -o /tmp/.aptrel -w "%{http_code}" "$url/dists/${suite}/Release" 2>/dev/null || echo 000)
     [[ "$code" == "200" ]] || return 1
     body=$(head -c 400 /tmp/.aptrel 2>/dev/null)
     rm -f /tmp/.aptrel
@@ -43,6 +52,26 @@ mirror_valid() {
 }
 
 # 0a. DNS dasar (paksa IPv4: AAAA sering menyesatkan di VPS tanpa route IPv6)
+# WAJIB dijalankan SEBELUM validasi mirror: mirror internal provider
+# (mirrors.tencentyun.com -> 169.254.0.3, link-local mati) hanya resolve lewat
+# DNS provider. Dulu validasi jalan duluan, mirror tampak "valid", lalu mati
+# setelah resolv.conf diganti -> apt update gagal total & semua paket dilewati.
+DNS_BACKUP=/etc/resolv.conf.vpn-installer.orig
+if [[ ! -f "$DNS_BACKUP" ]]; then
+    cp -f /etc/resolv.conf "$DNS_BACKUP" 2>/dev/null || true
+fi
+# Pastikan resolver publik tersedia sebagai CADANGAN (jangan hapus yang ada):
+# provider kadang blokir 1.1.1.1, jadi tambah dua sekaligus.
+for _ns in 1.1.1.1 8.8.8.8; do
+    grep -qE "^nameserver[[:space:]]+${_ns//./\\.}" /etc/resolv.conf 2>/dev/null || \
+        printf "nameserver %s\n" "$_ns" >> /etc/resolv.conf 2>/dev/null || true
+done
+# Kalau tetap tak ada yang bisa resolve, tulis ulang bersih tanpa systemd-resolved
+if ! getent ahostsv4 deb.debian.org >/dev/null 2>&1 && ! getent ahostsv4 archive.ubuntu.com >/dev/null 2>&1; then
+    rm -f /etc/resolv.conf
+    printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
+fi
+
 if ! getent ahostsv4 github.com >/dev/null 2>&1; then
     echo "  DNS gagal resolve — coba perbaiki resolv.conf..."
     printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
@@ -110,7 +139,7 @@ CUR_MIRROR=$(echo "$CUR_MIRROR" | head -1)
 if ! mirror_valid "$CUR_MIRROR"; then
     echo "  Mirror rusak/tidak valid: ${CUR_MIRROR:-<kosong>} -> cari pengganti..."
     if [[ "$OS_ID" == "debian" ]]; then
-        CANDIDATES=("http://deb.debian.org/debian" "http://ftp.debian.org/debian" "https://mirrors.aliyun.com/debian" "https://mirrors.tuna.tsinghua.edu.cn/debian")
+        CANDIDATES=("http://deb.debian.org/debian" "http://ftp.debian.org/debian" "https://deb.debian.org/debian" "http://ftp.us.debian.org/debian" "https://mirrors.aliyun.com/debian" "https://mirrors.tuna.tsinghua.edu.cn/debian" "https://mirrors.ustc.edu.cn/debian" "http://mirror.kakao.com/debian")
     else
         CANDIDATES=("http://archive.ubuntu.com/ubuntu" "http://security.ubuntu.com/ubuntu" "https://mirrors.aliyun.com/ubuntu" "http://azure.archive.ubuntu.com/ubuntu" "http://mirror.kakao.com/ubuntu")
     fi
@@ -135,8 +164,16 @@ if ! mirror_valid "$CUR_MIRROR"; then
                     > /etc/apt/sources.list.d/debian.sources
                 : > /etc/apt/sources.list
             else
-                printf "deb %s %s main contrib non-free non-free-firmware\ndeb %s %s-updates main contrib non-free non-free-firmware\ndeb %s %s-security main contrib non-free non-free-firmware\n" \
-                    "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" > /etc/apt/sources.list
+                # Security Debian ada di path KHUSUS, bukan $mirror/$codename-security.
+                SEC="http://security.debian.org/debian-security"
+                if mirror_valid "$SEC" "${OS_CODENAME}-security"; then
+                    printf "deb %s %s main contrib non-free non-free-firmware\ndeb %s %s-updates main contrib non-free non-free-firmware\ndeb %s %s-security main contrib non-free non-free-firmware\n" \
+                        "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" "$SEC" "$OS_CODENAME" > /etc/apt/sources.list
+                else
+                    printf "deb %s %s main contrib non-free non-free-firmware\ndeb %s %s-updates main contrib non-free non-free-firmware\n" \
+                        "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" > /etc/apt/sources.list
+                    echo "  Peringatan: security.debian.org tak terjangkau, baris security dihilangkan."
+                fi
             fi
         else
             SEC="http://security.ubuntu.com/ubuntu"
@@ -155,7 +192,6 @@ if ! mirror_valid "$CUR_MIRROR"; then
         fi
     done
 fi
-echo "  Pre-flight OK."
 
 # 1. Buka Paksa Kunci APT/DPKG (Mengatasi lock-frontend PID 1410 di VPS Baru)
 echo "[1/6] Membebaskan kunci APT/DPKG & mengoptimasi Swap RAM..."
@@ -166,10 +202,6 @@ sleep 1
 rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend
 dpkg --configure -a --force-confdef --force-confold >/dev/null 2>&1 || true
 
-systemctl stop systemd-resolved >/dev/null 2>&1 || true
-systemctl disable systemd-resolved >/dev/null 2>&1 || true
-rm -f /etc/resolv.conf
-echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8" > /etc/resolv.conf
 ln -sf /usr/share/zoneinfo/Asia/Jakarta /etc/localtime
 
 ARCH_RAW=$(uname -m)
@@ -9418,7 +9450,7 @@ CUR_MIRROR=$(echo "$CUR_MIRROR" | head -1 | sed 's#/$##')
 if ! mirror_valid "$CUR_MIRROR"; then
     echo "  Mirror rusak/tidak valid: ${CUR_MIRROR:-<kosong>} -> cari pengganti..."
     if [[ "$OS_ID" == "debian" ]]; then
-        CANDIDATES=("http://deb.debian.org/debian" "http://ftp.debian.org/debian" "https://mirrors.aliyun.com/debian" "https://mirrors.tuna.tsinghua.edu.cn/debian")
+        CANDIDATES=("http://deb.debian.org/debian" "http://ftp.debian.org/debian" "https://deb.debian.org/debian" "http://ftp.us.debian.org/debian" "https://mirrors.aliyun.com/debian" "https://mirrors.tuna.tsinghua.edu.cn/debian" "https://mirrors.ustc.edu.cn/debian" "http://mirror.kakao.com/debian")
     else
         CANDIDATES=("http://archive.ubuntu.com/ubuntu" "http://security.ubuntu.com/ubuntu" "https://mirrors.aliyun.com/ubuntu" "http://azure.archive.ubuntu.com/ubuntu" "http://mirror.kakao.com/ubuntu")
     fi
@@ -9429,8 +9461,14 @@ if ! mirror_valid "$CUR_MIRROR"; then
     if [[ -n "$CHOSEN" ]]; then
         echo "  Mirror pengganti: $CHOSEN"
         if [[ "$OS_ID" == "debian" ]]; then
-            printf "deb %s %s main contrib non-free\\ndeb %s %s-updates main contrib non-free\\ndeb %s %s-security main contrib non-free\\n" \\
-                "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" > /etc/apt/sources.list
+            SEC="http://security.debian.org/debian-security"
+            if mirror_valid "$SEC" "${OS_CODENAME}-security"; then
+                printf "deb %s %s main contrib non-free\\ndeb %s %s-updates main contrib non-free\\ndeb %s %s-security main contrib non-free\\n" \\
+                    "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" "$SEC" "$OS_CODENAME" > /etc/apt/sources.list
+            else
+                printf "deb %s %s main contrib non-free\\ndeb %s %s-updates main contrib non-free\\n" \\
+                    "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" > /etc/apt/sources.list
+            fi
         else
             SEC="http://security.ubuntu.com/ubuntu"
             mirror_valid "$SEC" || SEC="$CHOSEN"
@@ -9800,11 +9838,6 @@ if ! head -c4 /usr/local/bin/udpgw 2>/dev/null | grep -q $'\x7fELF'; then
 fi
 # legacy name: dnstt-server → vaydns-server (kompatibilitas lama)
 [[ -x /usr/local/bin/vaydns-server ]] && ln -sf /usr/local/bin/vaydns-server /usr/local/bin/dnstt-server
-for _BINCHK in vaydns-server udpgw udp-custom; do
-    if ! head -c4 "/usr/local/bin/$_BINCHK" 2>/dev/null | grep -q $'\x7fELF'; then
-        echo "  !! PERINGATAN: $_BINCHK gagal diunduh — perbaiki DNS/koneksi lalu jalankan ulang installer"
-    fi
-done
 # --- udp-custom ---
 UC_BIN=/usr/local/bin/udp-custom
 UC_OK=0
@@ -9835,11 +9868,28 @@ if ! head -c4 "$UC_BIN" 2>/dev/null | grep -q $'\x7fELF'; then
 else
     UC_OK=1
 fi
+# Verifikasi binari SETELAH semua unduhan (dulu dicek sebelum unduh -> alarm palsu)
+for _BINCHK in vaydns-server udpgw udp-custom; do
+    if ! head -c4 "/usr/local/bin/$_BINCHK" 2>/dev/null | grep -q $'\x7fELF'; then
+        echo "  !! PERINGATAN: $_BINCHK gagal diunduh — perbaiki DNS/koneksi lalu jalankan ulang installer"
+    fi
+done
 # --- systemd-resolved: matikan agar :53 bebas ---
 # --- systemd-resolved: matikan agar :53 bebas ---
 systemctl stop systemd-resolved 2>/dev/null || true
 systemctl disable systemd-resolved 2>/dev/null || true
-printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
+# JANGAN timpa resolv.conf: preflight sudah menyiapkannya, dan mirror internal
+# provider (mirrors.tencentyun.com dll) hanya resolve lewat DNS provider.
+# Menimpa di sini = apt/mirror mati lagi (bug nyata di Debian 12 Tencent).
+for _ns in 1.1.1.1 8.8.8.8; do
+    grep -qE "^nameserver[[:space:]]+${_ns//./\\.}" /etc/resolv.conf 2>/dev/null || \
+        printf "nameserver %s\n" "$_ns" >> /etc/resolv.conf 2>/dev/null || true
+done
+if ! getent ahostsv4 deb.debian.org >/dev/null 2>&1 && ! getent ahostsv4 archive.ubuntu.com >/dev/null 2>&1; then
+    if [[ -f /etc/resolv.conf.vpn-installer.orig ]]; then
+        cp -f /etc/resolv.conf.vpn-installer.orig /etc/resolv.conf 2>/dev/null || true
+    fi
+fi
 # --- generate key dnstt (sekali saja) ---
 if [[ ! -f /etc/slowdns/server.pub && -x /usr/local/bin/dnstt-server ]]; then
     /usr/local/bin/vaydns-server -gen-key \
@@ -10764,11 +10814,6 @@ if ! head -c4 /usr/local/bin/udpgw 2>/dev/null | grep -q $'\x7fELF'; then
 fi
 # legacy name: dnstt-server → vaydns-server (kompatibilitas lama)
 [[ -x /usr/local/bin/vaydns-server ]] && ln -sf /usr/local/bin/vaydns-server /usr/local/bin/dnstt-server
-for _BINCHK in vaydns-server udpgw udp-custom; do
-    if ! head -c4 "/usr/local/bin/$_BINCHK" 2>/dev/null | grep -q $'\x7fELF'; then
-        echo "  !! PERINGATAN: $_BINCHK gagal diunduh — perbaiki DNS/koneksi lalu jalankan ulang installer"
-    fi
-done
 # --- udp-custom ---
 UC_BIN=/usr/local/bin/udp-custom
 UC_OK=0
@@ -10799,11 +10844,28 @@ if ! head -c4 "$UC_BIN" 2>/dev/null | grep -q $'\x7fELF'; then
 else
     UC_OK=1
 fi
+# Verifikasi binari SETELAH semua unduhan (dulu dicek sebelum unduh -> alarm palsu)
+for _BINCHK in vaydns-server udpgw udp-custom; do
+    if ! head -c4 "/usr/local/bin/$_BINCHK" 2>/dev/null | grep -q $'\x7fELF'; then
+        echo "  !! PERINGATAN: $_BINCHK gagal diunduh — perbaiki DNS/koneksi lalu jalankan ulang installer"
+    fi
+done
 # --- systemd-resolved: matikan agar :53 bebas ---
 # --- systemd-resolved: matikan agar :53 bebas ---
 systemctl stop systemd-resolved 2>/dev/null || true
 systemctl disable systemd-resolved 2>/dev/null || true
-printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
+# JANGAN timpa resolv.conf: preflight sudah menyiapkannya, dan mirror internal
+# provider (mirrors.tencentyun.com dll) hanya resolve lewat DNS provider.
+# Menimpa di sini = apt/mirror mati lagi (bug nyata di Debian 12 Tencent).
+for _ns in 1.1.1.1 8.8.8.8; do
+    grep -qE "^nameserver[[:space:]]+${_ns//./\\.}" /etc/resolv.conf 2>/dev/null || \
+        printf "nameserver %s\n" "$_ns" >> /etc/resolv.conf 2>/dev/null || true
+done
+if ! getent ahostsv4 deb.debian.org >/dev/null 2>&1 && ! getent ahostsv4 archive.ubuntu.com >/dev/null 2>&1; then
+    if [[ -f /etc/resolv.conf.vpn-installer.orig ]]; then
+        cp -f /etc/resolv.conf.vpn-installer.orig /etc/resolv.conf 2>/dev/null || true
+    fi
+fi
 # --- generate key dnstt (sekali saja) ---
 if [[ ! -f /etc/slowdns/server.pub && -x /usr/local/bin/dnstt-server ]]; then
     /usr/local/bin/vaydns-server -gen-key \
