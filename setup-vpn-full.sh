@@ -5966,9 +5966,9 @@ async def cb_do_unlock(cb: CallbackQuery):
     with db_conn() as conn:
         rows = conn.execute("SELECT * FROM accounts WHERE locked_until > ?", (now,)).fetchall() if target == "all" else conn.execute("SELECT * FROM accounts WHERE id=?", (int(target),)).fetchall()
         for r in rows:
-            exp_date_str = datetime.fromtimestamp(r["expired_at"]).strftime("%Y-%m-%d")
-            if r["protocol"] == "ssh": engine.unlock_ssh_user(r["username"], exp_date_str)
-            else: engine.add_xray_user(r["protocol"], r["username"], r["secret"])
+            # Pulihkan password/UUID ASLI. Dulu SSH diisi tanggal expired sebagai
+            # password -> setelah tombol Unlock, login tetap ditolak.
+            await asyncio.to_thread(engine.set_remote_or_local_lock, None, r["protocol"], r["username"], r["secret"], False)
             conn.execute("UPDATE accounts SET locked_until=0, strike_count=0, active_sessions=0, last_ips='' WHERE id=?", (r["id"],))
         conn.commit()
     await cb.answer("Akun berhasil di-unlock.", show_alert=True)
