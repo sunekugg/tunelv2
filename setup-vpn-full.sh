@@ -4062,17 +4062,8 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
             [make_copy_btn("📋 Salin Upgrade TLS", l_uptls, f"cp:{acc_id}:uptls")]
         ])
 
-    kb_rows.append([InlineKeyboardButton(text="🎯 Inject Bug & Multi-Client", callback_data=f"inj_menu:{acc_id}")])
-    if acc_row["locked_until"] <= int(time.time()):
-        if proto in ("vmess", "vless", "trojan"):
-            kb_rows.append([
-                InlineKeyboardButton(text="🔄 Tukar Protokol", callback_data=f"chg_proto_menu:{acc_id}"),
-                InlineKeyboardButton(text="🌐 Pindah Server", callback_data=f"move_srv_menu:{acc_id}")
-            ])
-        else:
-            kb_rows.append([
-                InlineKeyboardButton(text="🌐 Pindah Server", callback_data=f"move_srv_menu:{acc_id}")
-            ])
+    # Inject Bug, Tukar Protokol, Pindah Server pindah ke 🛠️ Kelola Akun Mandiri.
+    kb_rows.append([InlineKeyboardButton(text="🛠️ Kelola Akun Mandiri", callback_data=f"mandiri:{acc_id}")])
 
     kb_rows.append([
         InlineKeyboardButton(text="👤 Akun Saya", callback_data="my_accounts"),
@@ -4598,19 +4589,10 @@ async def cb_my_accounts(cb: CallbackQuery):
             kb.append([InlineKeyboardButton(text=f"📄 Lihat {r['username']} ({r['protocol'].upper()})", callback_data=f"view_my:{r['id']}")])
         else:
             status_lbl = "🟢 Aktif"
-            kb.append([
-                InlineKeyboardButton(text=f"📄 {r['username']} ({r['protocol'].upper()})", callback_data=f"view_my:{r['id']}"),
-                InlineKeyboardButton(text="🎯 Inject Bug", callback_data=f"inj_menu:{r['id']}")
-            ])
-            if r["protocol"] in ("vmess", "vless", "trojan"):
-                kb.append([
-                    InlineKeyboardButton(text=f"🔄 Tukar Protokol ({r['username']})", callback_data=f"chg_proto_menu:{r['id']}"),
-                    InlineKeyboardButton(text="🌐 Pindah Server", callback_data=f"move_srv_menu:{r['id']}")
-                ])
-            else:
-                kb.append([
-                    InlineKeyboardButton(text=f"🌐 Pindah Server ({r['username']})", callback_data=f"move_srv_menu:{r['id']}")
-                ])
+            # Inject bug / tukar protokol / pindah server ada di 🛠️ Kelola Akun Mandiri.
+            kb.append([InlineKeyboardButton(
+                text=f"📄 {r['username']} ({r['protocol'].upper()})",
+                callback_data=f"view_my:{r['id']}")])
         lines.append(
             f"• <code>{html.escape(r['username'])}</code> ({r['protocol'].upper()}) — <b>{html.escape(srv_lbl)}</b>\n"
             f"  Status : {status_lbl}\n"
@@ -7339,7 +7321,7 @@ async def send_smart_sub(target, acc_id, edit=False):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Update Subscription Sekarang", callback_data=f"sub_refresh:{acc_id}")],
         [InlineKeyboardButton(text="🎯 Atur Bug Subscription", callback_data=f"sub_bug:{acc_id}")],
-        [InlineKeyboardButton(text="🛠️ Kelola Mandiri", callback_data=f"view_my:{acc_id}")],
+        [InlineKeyboardButton(text="🛠️ Kelola Mandiri", callback_data=f"mandiri:{acc_id}")],
         [InlineKeyboardButton(text="📥 File Clash (.yaml)", callback_data=f"sub_file:{acc_id}:clash"),
          InlineKeyboardButton(text="📥 File Sing-box (.json)", callback_data=f"sub_file:{acc_id}:singbox")],
         [InlineKeyboardButton(text="📱 QR Sub v2rayNG", callback_data=f"sub_qr:{acc_id}:v2ray"),
