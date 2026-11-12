@@ -10280,7 +10280,10 @@ stream {
 
     # TLS terminate utk jalur non-h2, teruskan plaintext ke WS-Bridge
     server {
-        listen 127.0.0.1:10444 ssl;
+        # proxy_protocol WAJIB di sini: 443 mengirim PROXY header. Tanpa ini
+        # nginx membaca 'PROXY TCP4 ...' sebagai ClientHello rusak -> handshake
+        # gagal 0 byte -> SSH SSL (port 443) tidak pernah konek.
+        listen 127.0.0.1:10444 ssl proxy_protocol;
         ssl_certificate /etc/xray/certs/fullchain.pem;
         ssl_certificate_key /etc/xray/certs/privkey.pem;
         ssl_protocols TLSv1.2 TLSv1.3;
@@ -10499,7 +10502,10 @@ stream {
 
     # TLS terminate utk jalur non-h2, teruskan plaintext ke WS-Bridge
     server {
-        listen 127.0.0.1:10444 ssl;
+        # proxy_protocol WAJIB di sini: 443 mengirim PROXY header. Tanpa ini
+        # nginx membaca 'PROXY TCP4 ...' sebagai ClientHello rusak -> handshake
+        # gagal 0 byte -> SSH SSL (port 443) tidak pernah konek.
+        listen 127.0.0.1:10444 ssl proxy_protocol;
         ssl_certificate /etc/xray/certs/fullchain.pem;
         ssl_certificate_key /etc/xray/certs/privkey.pem;
         ssl_protocols TLSv1.2 TLSv1.3;
