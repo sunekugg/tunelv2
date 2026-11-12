@@ -316,26 +316,77 @@ def extract_real_ip_from_headers(headers_text: str, default_ip: str) -> str:
                 return cand
     return default_ip
 
+def sub_recipient(uname: str, proto: str, secret: str, domain: str, addr: str, sni: str,
+                  insecure: bool, path_str: str):
+    """Satu link config utk tiap entri subscription (TLS 443 + NTLS 80)."""
+    out = []
+    p_json = path_str
+    p_uri = path_str.replace("/", "%2F")
+    # Xray-core >= 26.7.11 MENOLAK VLESS/Trojan tanpa TLS (config gagal dibangun),
+    # jadi utk proto itu hanya entri TLS yang dikirim. VMess tetap dua-duanya.
+    combos = ((443, True),) if proto in ("vless", "trojan") else ((443, True), (80, False))
+    for port, tls_on in combos:
+        lbl = "TLS" if tls_on else "NTLS"
+        if proto == "trojan":
+            q = f"security=none&type=ws&host={domain}&path={p_uri}"
+            if tls_on:
+                q = f"security=tls&sni={sni}&allowInsecure={1 if insecure else 0}&type=ws&host={sni}&path={p_uri}"
+            out.append(f"trojan://{secret}@{addr}:{port}?{q}#{uname}-{lbl}")
+        elif proto == "vless":
+            q = f"encryption=none&security=none&type=ws&host={domain}&path={p_uri}"
+            if tls_on:
+                q = f"encryption=none&security=tls&sni={sni}&allowInsecure={1 if insecure else 0}&type=ws&host={sni}&path={p_uri}"
+            out.append(f"vless://{secret}@{addr}:{port}?{q}#{uname}-{lbl}")
+        else:
+            o = {"v": "2", "ps": f"{uname}-{lbl}", "add": addr, "port": str(port),
+                 "id": secret, "aid": "0", "net": "ws", "path": p_json, "type": "none",
+                 "host": sni if tls_on else domain, "sni": sni if tls_on else "",
+                 "tls": "tls" if tls_on else "none"}
+            if tls_on:
+                o["allowInsecure"] = "1" if insecure else "0"
+            out.append("vmess://" + base64.b64encode(
+                json.dumps(o, separators=(",", ":")).encode()).decode())
+    return out
+
+def sub_http(code: int, body: bytes, extra: bytes = b""):
+    reason = {200: "OK", 403: "Forbidden", 404: "Not Found"}.get(code, "OK")
+    return (f"HTTP/1.1 {code} {reason}\r\n".encode()
+            + extra
+            + b"Content-Type: text/plain; charset=utf-8\r\n"
+            + b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+            + b"Connection: close\r\n\r\n" + body)
+
 def generate_sub_response(clean_path: str) -> bytes:
     uname = clean_path.split("/sub/", 1)[1].strip("/")
-    if not uname or not os.path.exists("/etc/vpn-bot/vpn_data.db"):
-        return b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found"
+    # hanya izinkan karakter username sah (cegah path aneh dari internet)
+    if not uname or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", uname):
+        return sub_http(404, b"Not Found")
+    if not os.path.exists("/etc/vpn-bot/vpn_data.db"):
+        return sub_http(404, b"Not Found")
     conn = sqlite3.connect("/etc/vpn-bot/vpn_data.db", timeout=15)
     conn.row_factory = sqlite3.Row
     try:
         acc = conn.execute("SELECT * FROM accounts WHERE username=?", (uname,)).fetchone()
         if not acc:
-            return b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found"
-        srv = conn.execute("SELECT * FROM servers WHERE id=?", (acc["server_id"],)).fetchone() or conn.execute("SELECT * FROM servers LIMIT 1").fetchone()
+            return sub_http(404, b"Not Found")
+        srv = conn.execute("SELECT * FROM servers WHERE id=?", (acc["server_id"],)).fetchone() \
+              or conn.execute("SELECT * FROM servers LIMIT 1").fetchone()
         def_bug_row = conn.execute("SELECT value FROM settings WHERE key='bug_host'").fetchone()
+        expired_at = acc["expired_at"] or 0
     finally:
-        # tutup koneksi di SEMUA jalur agar tak bocor saat query gagal
         conn.close()
+
+    if not srv:
+        return sub_http(404, b"Server tidak ditemukan")
+    proto = (acc["protocol"] or "").lower()
+    # akun SSH tidak punya config Xray: jangan kirim link vmess palsu
+    if proto not in ("vmess", "vless", "trojan"):
+        return sub_http(404, b"Subscription hanya untuk akun Vmess/Vless/Trojan. Akun SSH pakai menu CONFIG SSH.")
 
     domain = srv["host"]
     secret = acc["secret"]
-    proto = acc["protocol"]
-    bug = (acc["custom_bug"] if "custom_bug" in acc.keys() and acc["custom_bug"] else (def_bug_row["value"] if def_bug_row else domain)) or domain
+    bug = (acc["custom_bug"] if "custom_bug" in acc.keys() and acc["custom_bug"]
+           else (def_bug_row["value"] if def_bug_row else domain)) or domain
     mode = acc["bug_mode"] if "bug_mode" in acc.keys() and acc["bug_mode"] else "sni"
 
     if mode == "wildcard" and bug != domain:
@@ -347,25 +398,17 @@ def generate_sub_response(clean_path: str) -> bytes:
     else:
         addr, sni = domain, domain
 
-    if proto == "trojan":
-        l_tls = f"trojan://{secret}@{addr}:443?security=tls&sni={sni}&type=ws&host={sni}&path=%2Ftrojan#{uname}-TLS"
-        l_ntls = f"trojan://{secret}@{addr}:80?security=none&type=ws&host={sni}&path=%2Ftrojan#{uname}-NTLS"
-    elif proto == "vless":
-        l_tls = f"vless://{secret}@{addr}:443?encryption=none&security=tls&sni={sni}&type=ws&host={sni}&path=%2Fvless#{uname}-TLS"
-        l_ntls = f"vless://{secret}@{addr}:80?encryption=none&security=none&type=ws&host={sni}&path=%2Fvless#{uname}-NTLS"
-    else:
-        def b64v(p, tls_v):
-            o = {"v":"2","ps":f"{uname}-{'TLS' if tls_v=='tls' else 'NTLS'}","add":addr,"port":str(p),"id":secret,"aid":"0","net":"ws","path":"/vmess","type":"none","host":sni,"sni":sni if tls_v=="tls" else "","tls":tls_v}
-            return "vmess://" + base64.b64encode(json.dumps(o, separators=(",",":")).encode()).decode()
-        l_tls, l_ntls = b64v(443, "tls"), b64v(80, "none")
-
-    body = base64.b64encode(f"{l_tls}\n{l_ntls}".encode()).decode().encode()
-    return (
-        b"HTTP/1.1 200 OK\r\n"
-        b"Content-Type: text/plain; charset=utf-8\r\n"
-        b"Content-Length: " + str(len(body)).encode() + b"\r\n"
-        b"Connection: close\r\n\r\n" + body
-    )
+    # Sertifikat TLS hanya utk "domain"; kalau SNI diarahkan ke bug lain,
+    # client WAJIB allowInsecure atau handshake-nya ditolak.
+    insecure = (sni != domain)
+    links = sub_recipient(uname, proto, secret, domain, addr, sni, insecure, f"/{proto}")
+    body = base64.b64encode("\n".join(links).encode()).decode().encode()
+    title = re.sub(r"[^\x20-\x7e]", "", f"{uname} - {srv['name']}").strip() or uname
+    extra = (f"profile-title: {title}\r\n".encode()
+             + b"profile-update-interval: 12\r\n"
+             + b"subscription-userinfo: upload=0; download=0; total=0; expire="
+             + str(int(expired_at)).encode() + b"\r\n")
+    return sub_http(200, body, extra)
 
 async def raw_pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, lport: int = 0):
     try:
@@ -1351,10 +1394,13 @@ def build_inject_links_and_yaml(proto: str, uname: str, secret: str, srv_name: s
     mode_lbl, addr, sni = compute_bug_target(domain, bug, mode)
     path_str = f"/{proto}" if proto in ("vmess", "vless", "trojan") else "/"
     enc_path = f"%2F{proto}" if proto in ("vmess", "vless", "trojan") else "%2F"
+    # Sertifikat TLS hanya valid utk `domain`. Bila SNI diarahkan ke bug,
+    # klien wajib allowInsecure atau handshake ditolak.
+    ins = "&allowInsecure=1" if sni != domain else ""
 
     if proto == "trojan":
-        tls_link = f"trojan://{secret}@{addr}:443?security=tls&sni={sni}&type=ws&host={sni}&path={enc_path}#{uname}-TLS"
-        ntls_link = f"trojan://{secret}@{addr}:80?security=none&type=ws&host={sni}&path={enc_path}#{uname}-NTLS"
+        tls_link = f"trojan://{secret}@{addr}:443?security=tls&sni={sni}{ins}&type=ws&host={sni}&path={enc_path}#{uname}-TLS"
+        ntls_link = f"trojan://{secret}@{addr}:80?security=none&type=ws&host={domain}&path={enc_path}#{uname}-NTLS"
         yaml_cfg = (
             "proxies:\n"
             f"  - name: \"{uname}-TLS\"\n"
@@ -1387,8 +1433,8 @@ def build_inject_links_and_yaml(proto: str, uname: str, secret: str, srv_name: s
             f"        Host: {sni}"
         )
     elif proto == "vless":
-        tls_link = f"vless://{secret}@{addr}:443?encryption=none&security=tls&sni={sni}&type=ws&host={sni}&path={enc_path}#{uname}-TLS"
-        ntls_link = f"vless://{secret}@{addr}:80?encryption=none&security=none&type=ws&host={sni}&path={enc_path}#{uname}-NTLS"
+        tls_link = f"vless://{secret}@{addr}:443?encryption=none&security=tls&sni={sni}{ins}&type=ws&host={sni}&path={enc_path}#{uname}-TLS"
+        ntls_link = f"vless://{secret}@{addr}:80?encryption=none&security=none&type=ws&host={domain}&path={enc_path}#{uname}-NTLS"
         yaml_cfg = (
             "proxies:\n"
             f"  - name: \"{uname}-TLS\"\n"
@@ -1424,7 +1470,9 @@ def build_inject_links_and_yaml(proto: str, uname: str, secret: str, srv_name: s
         tls_link = make_vmess_b64(f"{uname}-TLS", addr, 443, secret, "ws", "/vmess", "tls")
         # Override host & sni inside vmess json for custom bug
         obj_tls = {"v":"2","ps":f"{uname}-TLS","add":addr,"port":"443","id":secret,"aid":"0","net":"ws","path":"/vmess","type":"none","host":sni,"sni":sni,"tls":"tls"}
-        obj_ntls = {"v":"2","ps":f"{uname}-NTLS","add":addr,"port":"80","id":secret,"aid":"0","net":"ws","path":"/vmess","type":"none","host":sni,"sni":"","tls":"none"}
+        if sni != domain:
+            obj_tls["allowInsecure"] = "1"
+        obj_ntls = {"v":"2","ps":f"{uname}-NTLS","add":addr,"port":"80","id":secret,"aid":"0","net":"ws","path":"/vmess","type":"none","host":domain,"sni":"","tls":"none"}
         tls_link = "vmess://" + base64.b64encode(json.dumps(obj_tls, separators=(",",":")).encode()).decode()
         ntls_link = "vmess://" + base64.b64encode(json.dumps(obj_ntls, separators=(",",":")).encode()).decode()
         yaml_cfg = (
@@ -6617,6 +6665,10 @@ async def render_injected_config_screen(msg_or_cb, acc_id: int, mode: str, bug_v
         ]
     ])
 
+    if mode == "wildcard":
+        text_out += ("\n\n⚠️ <i>Mode Wildcard butuh DNS <b>*.domain</b> (wildcard record) "
+                     "mengarah ke VPS ini. Bila belum ada, aplikasi akan gagal resolve "
+                     "\u2014 pakai mode SNI atau CDN.</i>")
     if is_message:
         await msg_or_cb.answer(text_out, parse_mode="HTML", reply_markup=kb)
     else:
@@ -6651,8 +6703,16 @@ async def cb_inj_extra(cb: CallbackQuery):
         )
         await cb.answer("✅ Config Sing-box (JSON) dikirim!")
     elif action == "sub":
+        if acc["protocol"] not in ("vmess", "vless", "trojan"):
+            await cb.answer("Akun SSH tidak punya subscription. Pakai menu CONFIG SSH.", show_alert=True)
+            return
         sub_https = f"https://{domain}/sub/{uname}"
         sub_http = f"http://{domain}/sub/{uname}"
+        note_sni = ""
+        if mode == "sni" and bug_val and bug_val != domain:
+            note_sni = ("\n⚠️ <i>Mode SNI memakai bug " + html.escape(bug_val) +
+                        ". Sertifikat server bukan untuk nama itu, jadi di aplikasi "
+                        "klien aktifkan <b>Allow Insecure</b> / <b>Skip Cert Verify</b>.</i>")
         await cb.message.answer(
             f"🔗 <b>LINK SUBSCRIPTION (AUTO-UPDATE) — {html.escape(uname)}</b>\n"
             "────────────────────────────\n"
@@ -6660,7 +6720,8 @@ async def cb_inj_extra(cb: CallbackQuery):
             f"<pre><code class=\"language-Https\">{html.escape(sub_https)}</code></pre>\n\n"
             "• <b>HTTP (Port 80):</b>\n"
             f"<pre><code class=\"language-Http\">{html.escape(sub_http)}</code></pre>\n"
-            "<i>Tempelkan link di atas pada v2rayNG, NekoBox, Hiddify, atau Clash untuk sinkronisasi otomatis.</i>",
+            "<i>Tempelkan link di atas pada v2rayNG, NekoBox, Hiddify, atau Clash untuk sinkronisasi otomatis.</i>"
+            + note_sni,
             parse_mode="HTML"
         )
         await cb.answer("✅ Link Subscription dikirim!")
