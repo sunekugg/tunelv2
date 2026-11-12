@@ -769,6 +769,31 @@ async def raw_pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, l
         except Exception:
             pass
 
+TLS_PREHOP = {}  # port sumber ws-bridge->nginx:10445  ->  IP asli klien
+
+async def tls_prehop(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    """Jalur 443 tanpa ALPN (SSH SSL / WS TLS): ambil IP asli dari PROXY header
+    nginx:443, lalu teruskan byte TLS apa adanya ke nginx:10445."""
+    lport = 0
+    try:
+        line = await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=10.0)
+        parts = line.decode("latin-1", errors="ignore").split()
+        real_ip = parts[2] if len(parts) >= 5 and parts[0] == "PROXY" else ""
+        b_reader, b_writer = await asyncio.open_connection("127.0.0.1", 10445)
+        sockname = b_writer.get_extra_info("sockname")
+        lport = sockname[1] if sockname else 0
+        if lport and real_ip and not real_ip.startswith("127."):
+            TLS_PREHOP[lport] = real_ip
+        await asyncio.gather(raw_pipe(reader, b_writer), raw_pipe(b_reader, writer))
+    except Exception:
+        pass
+    finally:
+        TLS_PREHOP.pop(lport, None)
+        try:
+            writer.close()
+        except Exception:
+            pass
+
 async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter):
     peer = client_writer.get_extra_info("peername")
     real_ip = peer[0] if peer else "127.0.0.1"
@@ -789,6 +814,7 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
                     real_ip = parts[2]
                 if len(parts) >= 5 and parts[4].isdigit():
                     real_port = int(parts[4])
+                    real_ip = TLS_PREHOP.get(real_port, real_ip)
                 initial = initial[nl_idx + 2:]
                 if not initial:
                     initial = await asyncio.wait_for(client_reader.read(8192), timeout=10.0)
@@ -932,6 +958,7 @@ async def main():
                 pass
 
     server = await asyncio.start_server(handle_client, "127.0.0.1", 10015, reuse_port=True)
+    await asyncio.start_server(tls_prehop, "127.0.0.1", 10444, reuse_port=True)
     subserver = None
     try:
         subserver = await asyncio.start_server(sub_http_handler, "0.0.0.0", SUB_PORT, reuse_port=True)
@@ -10236,7 +10263,7 @@ chmod 644 /etc/xray/certs/fullchain.pem /etc/xray/certs/privkey.pem 2>/dev/null 
 # 8. Bebaskan Port Web & Konfigurasi Nginx (Stream + Fallback HTTP/HTTPS Murni)
 systemctl stop apache2 httpd lighttpd caddy haproxy nginx >/dev/null 2>&1 || true
 systemctl disable apache2 httpd lighttpd caddy haproxy >/dev/null 2>&1 || true
-for p in 80 443 8080 8443 8880 2052 2053 2082 2083 10443 10444; do
+for p in 80 443 8080 8443 8880 2052 2053 2082 2083 10443 10444 10445; do
     fuser -k ${p}/tcp >/dev/null 2>&1 || true
 done
 
@@ -10280,10 +10307,10 @@ stream {
 
     # TLS terminate utk jalur non-h2, teruskan plaintext ke WS-Bridge
     server {
-        # proxy_protocol WAJIB di sini: 443 mengirim PROXY header. Tanpa ini
-        # nginx membaca 'PROXY TCP4 ...' sebagai ClientHello rusak -> handshake
-        # gagal 0 byte -> SSH SSL (port 443) tidak pernah konek.
-        listen 127.0.0.1:10444 ssl proxy_protocol;
+        # 10444 dipegang ws-bridge (baca PROXY header = IP asli klien), lalu
+        # ws-bridge menyambung ke sini. nginx stream Debian/Ubuntu tak punya
+        # stream_realip, jadi IP asli tidak bisa diteruskan nginx sendiri.
+        listen 127.0.0.1:10445 ssl;
         ssl_certificate /etc/xray/certs/fullchain.pem;
         ssl_certificate_key /etc/xray/certs/privkey.pem;
         ssl_protocols TLSv1.2 TLSv1.3;
@@ -10502,10 +10529,10 @@ stream {
 
     # TLS terminate utk jalur non-h2, teruskan plaintext ke WS-Bridge
     server {
-        # proxy_protocol WAJIB di sini: 443 mengirim PROXY header. Tanpa ini
-        # nginx membaca 'PROXY TCP4 ...' sebagai ClientHello rusak -> handshake
-        # gagal 0 byte -> SSH SSL (port 443) tidak pernah konek.
-        listen 127.0.0.1:10444 ssl proxy_protocol;
+        # 10444 dipegang ws-bridge (baca PROXY header = IP asli klien), lalu
+        # ws-bridge menyambung ke sini. nginx stream Debian/Ubuntu tak punya
+        # stream_realip, jadi IP asli tidak bisa diteruskan nginx sendiri.
+        listen 127.0.0.1:10445 ssl;
         ssl_certificate /etc/xray/certs/fullchain.pem;
         ssl_certificate_key /etc/xray/certs/privkey.pem;
         ssl_protocols TLSv1.2 TLSv1.3;
