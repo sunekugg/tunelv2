@@ -1197,6 +1197,14 @@ def make_vmess_b64(remarks, host, port, uuid_str, net, path, tls_val):
     raw = json.dumps(obj, separators=(",", ":")).encode("utf-8")
     return "vmess://" + base64.b64encode(raw).decode("utf-8")
 
+def _ip_lbl(v):
+    """0 atau None = Unlimited. Jangan pernah tampilkan '0 IP'."""
+    try:
+        n = int(v)
+    except Exception:
+        return "Unlimited"
+    return "Unlimited" if n <= 0 else f"{n} IP"
+
 def format_ssh_html(host, user, passwd, bug_host="bug.com", ip_limit=2, exp_str="-"):
     h = html.escape
     # Baca public key SlowDNS + NS domain dari server (fallback "-" bila belum terpasang)
@@ -1228,7 +1236,7 @@ def format_ssh_html(host, user, passwd, bug_host="bug.com", ip_limit=2, exp_str=
         f"HOST          : {h(host)}\n"
         f"Username      : {h(user)}\n"
         f"Password      : {h(passwd)}\n"
-        f"Limit IP      : {ip_limit} IP\n"
+        f"Limit IP      : {_ip_lbl(ip_limit)}\n"
         f"Expired On    : {h(exp_str)}\n"
         "————————————————————————————————————\n"
         "TLS           : 443,8443\n"
@@ -1286,7 +1294,7 @@ def format_vmess_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
         "path ws        : /vmess - /whatever\n"
         "serviceName    : vmess\n"
         "path upgrade   : /upvmess\n"
-        f"Limit IP       : {ip_limit} IP\n"
+        f"Limit IP       : {_ip_lbl(ip_limit)}\n"
         f"Expired On     : {h(expired)}\n"
         "————————————————————————————————————"
     )
@@ -1330,7 +1338,7 @@ def format_vless_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
         "Path ws        : /vless\n"
         "serviceName    : vless\n"
         "Path upgrade   : /upvless\n"
-        f"Limit IP       : {ip_limit} IP\n"
+        f"Limit IP       : {_ip_lbl(ip_limit)}\n"
         f"Expired On     : {h(expired)}\n"
         "————————————————————————————————————"
     )
@@ -1370,7 +1378,7 @@ def format_trojan_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
         "Path ws      : /trojan\n"
         "serviceName  : trojan\n"
         "Path upgrade : /uptrojan\n"
-        f"Limit IP     : {ip_limit} IP\n"
+        f"Limit IP     : {_ip_lbl(ip_limit)}\n"
         "————————————————————————————————————"
     )
     return (
@@ -4262,7 +4270,7 @@ def format_welcome_caption(user_id: int) -> str:
             "{domain}": cur_domain,
             "{lokasi}": DEFAULT_CITY,
             "{isp}": DEFAULT_ISP,
-            "{limit_ip}": f"{ip_lim} IP / Akun",
+            "{limit_ip}": f"{ip_lbl} / Akun",
             "{kuota_buat}": buat_akun_short,
             "{buat_akun}": buat_akun_short,
             "{aktif_akun}": aktif_akun_short,
@@ -4596,7 +4604,7 @@ async def cb_my_accounts(cb: CallbackQuery):
         lines.append(
             f"• <code>{html.escape(r['username'])}</code> ({r['protocol'].upper()}) — <b>{html.escape(srv_lbl)}</b>\n"
             f"  Status : {status_lbl}\n"
-            f"  Limit  : {'Unlimited' if r['ip_limit'] == 0 else str(r['ip_limit']) + ' IP'} | Exp: {exp_dt}"
+            f"  Limit  : {'Unlimited' if (r['ip_limit'] or 0) <= 0 else str(r['ip_limit']) + ' IP'} | Exp: {exp_dt}"
         )
     kb.append([InlineKeyboardButton(text="🛠️ Kelola Akun Mandiri", callback_data="mandiri_pick")])
     kb.append([InlineKeyboardButton(text="⬅️ Kembali ke Menu Utama", callback_data="back_home")])
@@ -5094,7 +5102,7 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
     try:
         user_id = tg_user.id
         now = int(time.time())
-        ip_limit = get_int_setting("default_ip_limit", 2, 1)
+        ip_limit = get_int_setting("default_ip_limit", 2, 0)
         quota_gb = get_int_setting("default_quota_gb", 50, 0)
         # Akun baru mewarisi speed VPS tujuan; fallback ke default global
         srv_spd = srv["speed_mbps"] if ("speed_mbps" in srv.keys() and srv["speed_mbps"]) else 0
@@ -5441,7 +5449,7 @@ async def cb_adm_online(cb: CallbackQuery):
             if sess > 0: total_online += 1
             last_ip = ips[-1] if ips else "-"
             by_proto.setdefault(r["protocol"], []).append(
-                f"  • <code>{html.escape(r['username'])}</code> | IP: <b>{len(ips)}/{r['ip_limit']}</b> | Sesi: {sess} | Last: <code>{html.escape(last_ip)}</code>{locked_badge}"
+                f"  • <code>{html.escape(r['username'])}</code> | IP: <b>{len(ips)}/{'∞' if (r['ip_limit'] or 0) <= 0 else r['ip_limit']}</b> | Sesi: {sess} | Last: <code>{html.escape(last_ip)}</code>{locked_badge}"
             )
     text_lines = [f"<b>CEK USER ONLINE (Total: {total_online})</b>\n────────────────────────────"]
     for p in ("ssh", "vmess", "vless", "trojan"):
@@ -5862,7 +5870,7 @@ async def cb_adm_limits_cfg(cb: CallbackQuery):
         f"• Durasi Trial : <b>{get_int_setting('trial_minutes', 30, 1)} Menit</b>\n"
         f"• Limit Buat Akun : <b>{get_int_setting('user_create_max', 1, 0)}x dalam {get_int_setting('user_create_days', 3, 1)} Hari</b>\n"
         f"• Limit Buat Trial : <b>{get_int_setting('trial_create_max', 3, 0)}x / Hari</b>\n"
-        f"• Limit IP : <b>{get_int_setting('default_ip_limit', 2, 1)} IP</b> | Kuota: <b>{get_int_setting('default_quota_gb', 50, 0)} GB</b>\n"
+        f"• Limit IP : <b>{'♾ Unlimited' if get_int_setting('default_ip_limit', 2, 0) <= 0 else str(get_int_setting('default_ip_limit', 2, 0)) + ' IP'}</b> | Kuota: <b>{get_int_setting('default_quota_gb', 50, 0)} GB</b>\n"
         f"• Speed Limit : <b>{get_int_setting('default_speed_mbps', 0, 0)} Mbps</b> | Max User: <b>{get_int_setting('max_users_per_vps', 100, 1)}</b>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -8878,7 +8886,7 @@ async def scanner_multi_login_worker():
                 if grp_id:
                     notif_txt = (
                         "PELANGGARAN MULTI-LOGIN TERDETEKSI\n"
-                        f"Username : {n['uname']} ({n['proto']})\nJumlah IP : {n['ip_cnt']} IP (Limit {n['ip_limit']} IP)\n"
+                        f"Username : {n['uname']} ({n['proto']})\nJumlah IP : {n['ip_cnt']} IP (Limit {n['ip_limit'] if (n['ip_limit'] or 0) > 0 else '∞'} IP)\n"
                         f"Daftar IP : {n['ips_str']}\nDurasi Lock : {n['lock_mins']} Menit\nAktif Kembali : {n['jam_wib']}"
                     )
                     kwargs = {"chat_id": int(grp_id), "text": notif_txt}
@@ -10128,7 +10136,8 @@ stream {
     # Single-Hop NTLS (HTTP WS / Payload): Mencatat Real-IP asli HP langsung ke WS-Bridge (10015)
     map $ssl_preread_alpn_protocols $tls_backend {
         default     127.0.0.1:10444;
-        ~*h2          127.0.0.1:10443;
+        ~*http        127.0.0.1:10443;
+        ~*h2        127.0.0.1:10443;
     }
 
     # 443/8443: pisah ALPN. h2 -> HTTP (gRPC), lainnya -> TLS terminate -> WS-Bridge (SSH SSL + WS)
@@ -10137,6 +10146,7 @@ stream {
         listen 8443 reuseport;
         ssl_preread on;
         proxy_pass $tls_backend;
+        proxy_protocol on;
         proxy_timeout 86400s;
     }
 
@@ -10182,7 +10192,10 @@ http {
 
     absolute_redirect off;
     server {
-        listen 127.0.0.1:10443 ssl http2 default_server reuseport;
+        listen 127.0.0.1:10443 ssl http2 default_server reuseport proxy_protocol;
+        set_real_ip_from 127.0.0.1;
+        set_real_ip_from ::1;
+        real_ip_header proxy_protocol;
         listen 2096 ssl http2 reuseport;
         server_name __DOMAIN__ _;
 
@@ -10342,7 +10355,8 @@ stream {
     # Single-Hop NTLS (HTTP WS / Payload): Mencatat Real-IP asli HP langsung ke WS-Bridge (10015)
     map $ssl_preread_alpn_protocols $tls_backend {
         default     127.0.0.1:10444;
-        ~*h2          127.0.0.1:10443;
+        ~*http        127.0.0.1:10443;
+        ~*h2        127.0.0.1:10443;
     }
 
     # 443/8443: pisah ALPN. h2 -> HTTP (gRPC), lainnya -> TLS terminate -> WS-Bridge (SSH SSL + WS)
@@ -10351,6 +10365,7 @@ stream {
         listen 8443 reuseport;
         ssl_preread on;
         proxy_pass $tls_backend;
+        proxy_protocol on;
         proxy_timeout 86400s;
     }
 
@@ -10396,7 +10411,10 @@ http {
 
     absolute_redirect off;
     server {
-        listen 127.0.0.1:10443 ssl http2 default_server reuseport;
+        listen 127.0.0.1:10443 ssl http2 default_server reuseport proxy_protocol;
+        set_real_ip_from 127.0.0.1;
+        set_real_ip_from ::1;
+        real_ip_header proxy_protocol;
         listen 2096 ssl http2 reuseport;
         server_name __DOMAIN__ _;
 
