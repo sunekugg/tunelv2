@@ -258,11 +258,14 @@ cat << 'EOF_EMBED_FILE' > /etc/vpn-bot/ws-bridge.py
 #!/usr/bin/env python3
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import re
+import socket
 import sqlite3
 import time
+import urllib.parse
 
 MAP_LOG = "/var/log/vpn-ws-map.log"
 PORT_BW_FILE = "/var/log/vpn-port-bw.json"
@@ -316,99 +319,349 @@ def extract_real_ip_from_headers(headers_text: str, default_ip: str) -> str:
                 return cand
     return default_ip
 
-def sub_recipient(uname: str, proto: str, secret: str, domain: str, addr: str, sni: str,
-                  insecure: bool, path_str: str):
-    """Satu link config utk tiap entri subscription (TLS 443 + NTLS 80)."""
-    out = []
-    p_json = path_str
-    p_uri = path_str.replace("/", "%2F")
-    # Xray-core >= 26.7.11 MENOLAK VLESS/Trojan tanpa TLS (config gagal dibangun),
-    # jadi utk proto itu hanya entri TLS yang dikirim. VMess tetap dua-duanya.
-    combos = ((443, True),) if proto in ("vless", "trojan") else ((443, True), (80, False))
-    for port, tls_on in combos:
-        lbl = "TLS" if tls_on else "NTLS"
-        if proto == "trojan":
-            q = f"security=none&type=ws&host={domain}&path={p_uri}"
-            if tls_on:
-                q = f"security=tls&sni={sni}&allowInsecure={1 if insecure else 0}&type=ws&host={sni}&path={p_uri}"
-            out.append(f"trojan://{secret}@{addr}:{port}?{q}#{uname}-{lbl}")
-        elif proto == "vless":
-            q = f"encryption=none&security=none&type=ws&host={domain}&path={p_uri}"
-            if tls_on:
-                q = f"encryption=none&security=tls&sni={sni}&allowInsecure={1 if insecure else 0}&type=ws&host={sni}&path={p_uri}"
-            out.append(f"vless://{secret}@{addr}:{port}?{q}#{uname}-{lbl}")
-        else:
-            o = {"v": "2", "ps": f"{uname}-{lbl}", "add": addr, "port": str(port),
-                 "id": secret, "aid": "0", "net": "ws", "path": p_json, "type": "none",
-                 "host": sni if tls_on else domain, "sni": sni if tls_on else "",
-                 "tls": "tls" if tls_on else "none"}
-            if tls_on:
-                o["allowInsecure"] = "1" if insecure else "0"
-            out.append("vmess://" + base64.b64encode(
-                json.dumps(o, separators=(",", ":")).encode()).decode())
+SUB_PORT = 2095
+SUB_DB = "/etc/vpn-bot/vpn_data.db"
+
+def _sub_db():
+    conn = sqlite3.connect(SUB_DB, timeout=15)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def sub_token(acc_id: int, user_id: int) -> str:
+    """Token subscription: <acc_id>_<sha256[:14]> — tak bisa ditebak tanpa bot token."""
+    try:
+        with open("/etc/vpn-bot/config.env") as f:
+            cfg = f.read()
+        tok = re.search(r'^BOT_TOKEN="?([^"\n]+)"?', cfg, re.M).group(1)
+    except Exception:
+        tok = "vpn-bot"
+    sig = hashlib.sha256(f"sub_v1:{int(acc_id)}:{int(user_id)}:{tok}".encode()).hexdigest()[:14]
+    return f"{int(acc_id)}_{sig}"
+
+def sub_urls(acc_id: int, user_id: int, bug: str = "", mode: str = "") -> dict:
+    try:
+        with _sub_db() as c:
+            row = c.execute("SELECT value FROM settings WHERE key='sub_host'").fetchone()
+            host = (row["value"] if row and row["value"] else "").strip()
+            if not host:
+                srv = c.execute("SELECT host FROM servers ORDER BY is_local DESC, id ASC LIMIT 1").fetchone()
+                host = srv["host"] if srv else ""
+    except Exception:
+        host = ""
+    tok = sub_token(acc_id, user_id)
+    base = f"http://{host}:{SUB_PORT}/sub/{tok}"
+    q = ""
+    if bug:
+        q = f"&bug={urllib.parse.quote(bug.strip(), safe='')}"
+        if mode:
+            q += f"&mode={urllib.parse.quote(mode.strip(), safe='')}"
+    return {
+        "v2ray": f"{base}?target=v2ray{q}",
+        "clash": f"{base}?target=clash{q}",
+        "singbox": f"{base}?target=singbox{q}",
+    }
+
+def _sub_presets(conn, mode_filter: str, limit: int = 6):
+    """Preset bug per-mode: setting bug_presets_<mode> ('Label=domain' per baris) -> fallback bug_presets."""
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (f"bug_presets_{mode_filter}",)).fetchone()
+        raw = (row["value"] if row else "") or ""
+    except Exception:
+        raw = ""
+    out, seen = [], set()
+    for part in re.split(r"[,\n]+", raw):
+        part = part.strip()
+        if not part:
+            continue
+        lbl, dom = part.split("=", 1) if "=" in part else (part, part)
+        lbl, dom = lbl.strip(), dom.strip().lower()
+        if dom and dom not in seen:
+            seen.add(dom)
+            out.append((lbl, dom))
+        if len(out) >= limit:
+            break
+    if out:
+        return out
+    try:
+        rows = conn.execute("SELECT bug_host FROM bug_presets ORDER BY id ASC LIMIT ?", (limit,)).fetchall()
+    except Exception:
+        rows = []
+    for r in rows:
+        d = (r["bug_host"] or "").strip().lower()
+        if d and d not in seen:
+            seen.add(d)
+            out.append((d.split(".")[0][:10], d))
     return out
 
-def sub_http(code: int, body: bytes, extra: bytes = b""):
-    reason = {200: "OK", 403: "Forbidden", 404: "Not Found"}.get(code, "OK")
-    return (f"HTTP/1.1 {code} {reason}\r\n".encode()
-            + extra
-            + b"Content-Type: text/plain; charset=utf-8\r\n"
-            + b"Content-Length: " + str(len(body)).encode() + b"\r\n"
-            + b"Connection: close\r\n\r\n" + body)
+_SUB_DNS_CACHE: dict = {}
 
-def generate_sub_response(clean_path: str) -> bytes:
-    uname = clean_path.split("/sub/", 1)[1].strip("/")
-    # hanya izinkan karakter username sah (cegah path aneh dari internet)
-    if not uname or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", uname):
-        return sub_http(404, b"Not Found")
-    if not os.path.exists("/etc/vpn-bot/vpn_data.db"):
-        return sub_http(404, b"Not Found")
-    conn = sqlite3.connect("/etc/vpn-bot/vpn_data.db", timeout=15)
-    conn.row_factory = sqlite3.Row
+def _sub_resolves(hostname: str) -> bool:
+    """True bila hostname punya A record. Di-cache 10 menit (murah, tidak spam DNS)."""
+    if not hostname:
+        return False
+    now = time.time()
+    hit = _SUB_DNS_CACHE.get(hostname)
+    if hit and now - hit[0] < 600:
+        return hit[1]
     try:
-        acc = conn.execute("SELECT * FROM accounts WHERE username=?", (uname,)).fetchone()
+        socket.getaddrinfo(hostname, None, socket.AF_INET)
+        ok = True
+    except Exception:
+        ok = False
+    _SUB_DNS_CACHE[hostname] = (now, ok)
+    return ok
+
+def _sub_node(proto: str, name: str, secret: str, domain: str, bug: str, mode: str, use_tls: bool):
+    """Satu node: URI v2ray + blok YAML clash + objek sing-box."""
+    p = proto.lower()
+    path_raw = f"/{p}"
+    port = 443 if use_tls else 80
+    lbl = "TLS" if use_tls else "NTLS"
+    if mode == "wildcard":
+        subd = bug if (bug == domain or bug.endswith("." + domain)) else f"{bug}.{domain}"
+        # Wildcard sejati: bug.domain harus punya DNS *.domain -> VPS ini.
+        # Tanpa itu node mustahil connect, jadi address jatuh ke domain asli
+        # (SNI/Host tetap bug.domain; server route lewat path).
+        address = subd if _sub_resolves(subd) else domain
+        sni, host = subd, subd
+    elif mode == "sni":
+        address, sni, host = domain, bug, bug
+    elif mode == "cdn":
+        address, sni, host = bug, domain, domain
+    else:
+        address, sni, host = domain, domain, domain
+    if not use_tls:
+        host = domain
+    node_name = f"{name}-{lbl}"
+    name_enc = urllib.parse.quote(node_name, safe="")
+    path_enc = urllib.parse.quote(path_raw, safe="")
+    # cert hanya utk domain; SNI lain wajib allowInsecure
+    ins = (sni != domain)
+
+    if p == "vmess":
+        o = {"v": "2", "ps": node_name, "add": address, "port": str(port), "id": secret,
+             "aid": "0", "scy": "auto", "net": "ws", "type": "none", "host": host,
+             "path": path_raw, "tls": "tls" if use_tls else "none",
+             "sni": sni if use_tls else ""}
+        if use_tls and ins:
+            o["allowInsecure"] = "1"
+        uri = "vmess://" + base64.b64encode(json.dumps(o, separators=(",", ":")).encode()).decode()
+        auth = f"    uuid: {secret}\n    alterId: 0\n    cipher: auto"
+    elif p == "vless":
+        q = (f"encryption=none&security=tls&sni={urllib.parse.quote(sni, safe='')}"
+             + ("&allowInsecure=1" if ins else "")
+             + f"&type=ws&host={urllib.parse.quote(host, safe='')}&path={path_enc}") if use_tls else \
+            f"encryption=none&security=none&type=ws&host={urllib.parse.quote(host, safe='')}&path={path_enc}"
+        uri = f"vless://{secret}@{address}:{port}?{q}#{name_enc}"
+        auth = f"    uuid: {secret}\n    cipher: auto"
+    else:
+        q = (f"security=tls&sni={urllib.parse.quote(sni, safe='')}"
+             + ("&allowInsecure=1" if ins else "")
+             + f"&type=ws&host={urllib.parse.quote(host, safe='')}&path={path_enc}") if use_tls else \
+            f"security=none&type=ws&host={urllib.parse.quote(host, safe='')}&path={path_enc}"
+        uri = f"trojan://{secret}@{address}:{port}?{q}#{name_enc}"
+        auth = f"    password: {secret}"
+
+    clash = (f"  - name: \"{node_name}\"\n"
+             f"    type: {p}\n"
+             f"    server: {address}\n"
+             f"    port: {port}\n"
+             f"{auth}\n"
+             f"    tls: {'true' if use_tls else 'false'}\n"
+             "    udp: true\n"
+             "    skip-cert-verify: true\n"
+             f"    servername: {sni}\n"
+             "    network: ws\n"
+             "    ws-opts:\n"
+             f"      path: {path_raw}\n"
+             "      headers:\n"
+             f"        Host: {host}")
+
+    sb = {"type": p, "tag": node_name, "server": address, "server_port": port}
+    if p == "vmess":
+        sb.update({"uuid": secret, "security": "auto", "alter_id": 0})
+    elif p == "vless":
+        sb["uuid"] = secret
+    else:
+        sb["password"] = secret
+    if use_tls:
+        sb["tls"] = {"enabled": True, "server_name": sni, "insecure": True, "alpn": ["http/1.1"]}
+    sb["transport"] = {"type": "ws", "path": path_raw, "headers": {"Host": host}}
+    return {"name": node_name, "uri": uri, "clash": clash, "singbox": sb}
+
+def sub_build_payload(acc_id: int, target: str = "v2ray", q_bug: str = "", q_mode: str = ""):
+    """Bangun subscription multi-node: bug prioritas + direct + semua preset."""
+    conn = _sub_db()
+    try:
+        acc = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
         if not acc:
-            return sub_http(404, b"Not Found")
-        srv = conn.execute("SELECT * FROM servers WHERE id=?", (acc["server_id"],)).fetchone() \
-              or conn.execute("SELECT * FROM servers LIMIT 1").fetchone()
-        def_bug_row = conn.execute("SELECT value FROM settings WHERE key='bug_host'").fetchone()
-        expired_at = acc["expired_at"] or 0
+            return None
+        srv = None
+        if acc["server_id"]:
+            srv = conn.execute("SELECT * FROM servers WHERE id=?", (acc["server_id"],)).fetchone()
+        if not srv:
+            srv = conn.execute("SELECT * FROM servers ORDER BY is_local DESC, id ASC LIMIT 1").fetchone()
+        if not srv:
+            return None
+        bug_def = conn.execute("SELECT value FROM settings WHERE key='bug_host'").fetchone()
+        bug_def = (bug_def["value"] if bug_def and bug_def["value"] else "") or srv["host"]
+        presets = {
+            "wildcard": _sub_presets(conn, "wildcard"),
+            "sni": _sub_presets(conn, "sni"),
+            "cdn": _sub_presets(conn, "cdn"),
+        }
+        user_id = acc["user_id"]
+        uname = acc["username"]
+        proto = (acc["protocol"] or "").lower()
+        secret = acc["secret"]
+        expired = int(acc["expired_at"] or 0)
+        domain = srv["host"]
+        srv_name = srv["name"] or domain
     finally:
         conn.close()
 
-    if not srv:
-        return sub_http(404, b"Server tidak ditemukan")
-    proto = (acc["protocol"] or "").lower()
-    # akun SSH tidak punya config Xray: jangan kirim link vmess palsu
     if proto not in ("vmess", "vless", "trojan"):
-        return sub_http(404, b"Subscription hanya untuk akun Vmess/Vless/Trojan. Akun SSH pakai menu CONFIG SSH.")
+        return None
 
-    domain = srv["host"]
-    secret = acc["secret"]
-    bug = (acc["custom_bug"] if "custom_bug" in acc.keys() and acc["custom_bug"]
-           else (def_bug_row["value"] if def_bug_row else domain)) or domain
-    mode = acc["bug_mode"] if "bug_mode" in acc.keys() and acc["bug_mode"] else "sni"
+    bug = (q_bug or (acc["custom_bug"] if "custom_bug" in acc.keys() and acc["custom_bug"] else bug_def) or "").strip().lower()
+    mode = (q_mode or (acc["bug_mode"] if "bug_mode" in acc.keys() and acc["bug_mode"] else "wildcard") or "wildcard").strip().lower()
+    if mode not in ("wildcard", "sni", "cdn", "default"):
+        mode = "wildcard"
 
-    if mode == "wildcard" and bug != domain:
-        addr, sni = bug, f"{bug}.{domain}"
-    elif mode == "sni" and bug != domain:
-        addr, sni = domain, bug
-    elif mode == "cdn" and bug != domain:
-        addr, sni = bug, domain
+    nodes = []
+    # 1) bug prioritas paling atas
+    if bug and bug != domain:
+        nodes.append(_sub_node(proto, f"\u2b50{uname}-{mode.upper()}-{bug[:14]}", secret, domain, bug, mode, True))
+        if mode in ("wildcard", "cdn"):
+            nodes.append(_sub_node(proto, f"\u2b50{uname}-{mode.upper()}-{bug[:14]}", secret, domain, bug, mode, False))
+    # 2) direct server
+    nodes.append(_sub_node(proto, f"{uname}-{srv_name}-Direct", secret, domain, domain, "default", True))
+    nodes.append(_sub_node(proto, f"{uname}-{srv_name}-Direct", secret, domain, domain, "default", False))
+    # 3) semua preset
+    for m, combos in (("wildcard", (True, False)), ("sni", (True,)), ("cdn", (True, False))):
+        for lbl, dom in presets[m]:
+            if bug and dom == bug and mode == m:
+                continue
+            short = re.sub(r"[^A-Za-z0-9_-]", "", lbl[:12]) or dom[:12]
+            tag = {"wildcard": "WC", "sni": "SNI", "cdn": "CDN"}[m]
+            for tls_on in combos:
+                # Xray-core >= 26.7.11 menolak VLESS/Trojan tanpa TLS
+                if not tls_on and proto in ("vless", "trojan"):
+                    continue
+                nodes.append(_sub_node(proto, f"{uname}-{tag}-{short}", secret, domain, dom, m, tls_on))
+
+    if target == "clash":
+        proxies = "\n".join(n["clash"] for n in nodes)
+        names = "\n".join(f'      - "{n["name"]}"' for n in nodes)
+        content = ("port: 7890\nsocks-port: 7891\nallow-lan: true\nmode: rule\nlog-level: info\n\n"
+                   f"proxies:\n{proxies}\n\n"
+                   'proxy-groups:\n'
+                   '  - name: "\U0001F680 PILIH-BUG-VPN"\n'
+                   "    type: select\n    proxies:\n"
+                   '      - "\u26a1 AUTO-PING-TERBAIK"\n'
+                   f"{names}\n\n"
+                   '  - name: "\u26a1 AUTO-PING-TERBAIK"\n'
+                   "    type: url-test\n    url: http://www.gstatic.com/generate_204\n"
+                   f"    interval: 180\n    tolerance: 50\n    proxies:\n{names}\n\n"
+                   'rules:\n  - MATCH,\U0001F680 PILIH-BUG-VPN\n')
+        filename, mime = f"{uname}-clash-sub.yaml", "text/yaml"
+    elif target == "singbox":
+        tags = [n["name"] for n in nodes]
+        outs = ([{"type": "selector", "tag": "\U0001F680 PILIH-BUG-VPN",
+                  "outbounds": ["\u26a1 AUTO-PING-TERBAIK"] + tags,
+                  "default": "\u26a1 AUTO-PING-TERBAIK"},
+                 {"type": "urltest", "tag": "\u26a1 AUTO-PING-TERBAIK", "outbounds": tags,
+                  "url": "http://www.gstatic.com/generate_204", "interval": "3m"}]
+                + [n["singbox"] for n in nodes]
+                + [{"type": "direct", "tag": "direct"}, {"type": "block", "tag": "block"}])
+        content = json.dumps({"outbounds": outs}, indent=2, ensure_ascii=False)
+        filename, mime = f"{uname}-singbox-sub.json", "application/json"
     else:
-        addr, sni = domain, domain
+        content = base64.b64encode("\n".join(n["uri"] for n in nodes).encode()).decode()
+        filename, mime = f"{uname}-v2ray-sub.txt", "text/plain"
 
-    # Sertifikat TLS hanya utk "domain"; kalau SNI diarahkan ke bug lain,
-    # client WAJIB allowInsecure atau handshake-nya ditolak.
-    insecure = (sni != domain)
-    links = sub_recipient(uname, proto, secret, domain, addr, sni, insecure, f"/{proto}")
-    body = base64.b64encode("\n".join(links).encode()).decode().encode()
-    title = re.sub(r"[^\x20-\x7e]", "", f"{uname} - {srv['name']}").strip() or uname
+    return {"user_id": int(user_id), "uname": uname, "expired": expired, "bug": bug,
+            "mode": mode, "srv_name": srv_name, "domain": domain,
+            "node_count": len(nodes), "content": content, "filename": filename, "mime": mime}
+
+def sub_http(code: int, body: bytes, extra: bytes = b""):
+    reason = {200: "OK", 403: "Forbidden", 404: "Not Found"}.get(code, "OK")
+    return (f"HTTP/1.1 {code} {reason}\r\n".encode() + extra +
+            b"Content-Type: text/plain; charset=utf-8\r\n"
+            b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+            b"Connection: close\r\n\r\n" + body)
+
+def generate_sub_response(clean_path: str, query: str = "", user_agent: str = "") -> bytes:
+    """Endpoint /sub/<id>_<sig>?target=v2ray|clash|singbox&bug=..&mode=.."""
+    token = clean_path.split("/sub/", 1)[1].strip("/")
+    if "_" not in token:
+        return sub_http(404, b"Token subscription tidak valid")
+    acc_s, _sig = token.split("_", 1)
+    if not acc_s.isdigit():
+        return sub_http(404, b"Token subscription tidak valid")
+    acc_id = int(acc_s)
+    qs = urllib.parse.parse_qs(query or "")
+    q_target = (qs.get("target", [""])[0] or "").strip().lower()
+    q_bug = (qs.get("bug", [""])[0] or "").strip()
+    q_mode = (qs.get("mode", [""])[0] or "").strip()
+    ua = (user_agent or "").lower()
+    if not q_target:
+        if any(k in ua for k in ("clash", "mihomo", "stash", "surfboard")):
+            q_target = "clash"
+        elif any(k in ua for k in ("sing-box", "sfa", "sfi", "nekobox")):
+            q_target = "singbox"
+        else:
+            q_target = "v2ray"
+    if q_target not in ("v2ray", "clash", "singbox"):
+        q_target = "v2ray"
+
+    if not os.path.exists(SUB_DB):
+        return sub_http(404, b"Database tidak ditemukan")
+    res = sub_build_payload(acc_id, q_target, q_bug, q_mode)
+    if not res:
+        return sub_http(404, b"Akun tidak ditemukan / bukan akun V2Ray / server belum ada")
+    if token != sub_token(acc_id, res["user_id"]):
+        return sub_http(403, b"Signature token tidak sah")
+
+    body = res["content"].encode()
+    title = re.sub(r"[^\x20-\x7e]", "", f"{res['uname']} - {res['srv_name']}").strip() or res["uname"]
     extra = (f"profile-title: {title}\r\n".encode()
-             + b"profile-update-interval: 12\r\n"
+             + b"profile-update-interval: 6\r\n"
+             + b"Cache-Control: no-store\r\n"
              + b"subscription-userinfo: upload=0; download=0; total=0; expire="
-             + str(int(expired_at)).encode() + b"\r\n")
-    return sub_http(200, body, extra)
+             + str(res["expired"]).encode() + b"\r\n"
+             + f"Content-Type: {res['mime']}\r\n".encode())
+    # Content-Type dobel tak boleh: pakai yang dari res saja
+    extra = (f"profile-title: {title}\r\n".encode()
+             + b"profile-update-interval: 6\r\n"
+             + b"Cache-Control: no-store\r\n"
+             + b"subscription-userinfo: upload=0; download=0; total=0; expire="
+             + str(res["expired"]).encode() + b"\r\n")
+    reason = b"HTTP/1.1 200 OK\r\n"
+    return (reason + extra
+            + f"Content-Type: {res['mime']}; charset=utf-8\r\n".encode()
+            + b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+            + b"Connection: close\r\n\r\n" + body)
+
+def sub_is_request(initial: bytes) -> bool:
+    return b"/sub/" in initial[:2048]
+
+def sub_parse_request(initial: bytes):
+    """Ambil path + query + User-Agent dari request mentah."""
+    txt = initial.decode("latin-1", errors="ignore")
+    path, query, ua = "", "", ""
+    first = txt.split("\r\n", 1)[0]
+    m = re.match(r"^(?:GET|HEAD)\s+(\S+)", first)
+    if m:
+        raw = m.group(1)
+        if "?" in raw:
+            path, query = raw.split("?", 1)
+        else:
+            path = raw
+    mu = re.search(r"(?im)^user-agent\s*:\s*([^\r\n]+)", txt)
+    if mu:
+        ua = mu.group(1).strip()
+    return path, query, ua
 
 async def raw_pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, lport: int = 0):
     try:
@@ -482,7 +735,8 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
                     break
 
         if clean_path.startswith("/sub/"):
-            resp_bytes = generate_sub_response(clean_path)
+            _sp, _sq, _sua = sub_parse_request(initial)
+            resp_bytes = generate_sub_response(_sp or clean_path, _sq, _sua)
             client_writer.write(resp_bytes)
             await client_writer.drain()
             client_writer.close()
@@ -565,9 +819,42 @@ async def main():
         except Exception:
             PORT_BYTES_MEM = {}
     asyncio.create_task(cleanup_map_log_worker())
+
+    async def sub_http_handler(reader, writer):
+        """Server HTTP subcription di port 2095 (langsung, tanpa nginx/WS)."""
+        try:
+            initial = await asyncio.wait_for(reader.read(8192), timeout=10.0)
+            if not initial:
+                writer.close()
+                return
+            p, q, ua = sub_parse_request(initial)
+            resp = generate_sub_response(p, q, ua)
+            writer.write(resp)
+            await writer.drain()
+        except Exception:
+            try:
+                writer.write(sub_http(500, b"Internal error"))
+                await writer.drain()
+            except Exception:
+                pass
+        finally:
+            try:
+                writer.close()
+            except Exception:
+                pass
+
     server = await asyncio.start_server(handle_client, "127.0.0.1", 10015, reuse_port=True)
+    subserver = None
+    try:
+        subserver = await asyncio.start_server(sub_http_handler, "0.0.0.0", SUB_PORT, reuse_port=True)
+    except Exception as e:
+        print(f"[SUB] port {SUB_PORT} gagal dibuka: {e}")
     async with server:
-        await server.serve_forever()
+        if subserver:
+            async with subserver:
+                await server.serve_forever()
+        else:
+            await server.serve_forever()
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -3245,6 +3532,8 @@ chmod +x /etc/vpn-bot/vpn_engine.py 2>/dev/null || true
 cat << 'EOF_EMBED_FILE' > /etc/vpn-bot/bot.py
 #!/usr/bin/env python3
 import asyncio
+import base64
+import hashlib
 import html
 import os
 import random
@@ -3252,6 +3541,8 @@ import re
 import sqlite3
 import subprocess
 import time
+import urllib.parse
+import urllib.request
 import uuid
 from datetime import datetime, timedelta
 import paramiko
@@ -3412,7 +3703,8 @@ def init_db():
             "default_speed_mbps": "0", "max_users_per_vps": "100", "user_create_max": "1",
             "user_create_days": "3", "trial_create_max": "3", "notif_create_group": "1",
             "force_join_chat": "", "force_join_link": "", "group_chat_id": "", "group_topic_id": "0",
-            "create_topic_id": "0", "bug_host": "v.whatsapp.net"
+            "create_topic_id": "0", "bug_host": "v.whatsapp.net",
+            "sub_host": "", "feat_smart_sub": "1"
         }
         for k, v in defaults.items():
             conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
@@ -6536,6 +6828,52 @@ async def cb_inj_menu(cb: CallbackQuery, state: FSMContext):
     txt, kb = build_inject_mode_menu(acc, srv)
     await safe_edit_Basic(cb, txt, reply_markup=kb)
 
+SUB_PORT = 2095
+
+def sub_token(acc_id, user_id):
+    """Token subscription — sama persis dgn yang divalidasi ws-bridge."""
+    raw = f"sub_v1:{int(acc_id)}:{int(user_id)}:{BOT_TOKEN}"
+    return f"{int(acc_id)}_" + hashlib.sha256(raw.encode()).hexdigest()[:14]
+
+def sub_host():
+    """Host publik utk link subscription. Bisa di-override lewat setting sub_host."""
+    h = (get_setting("sub_host", "") or "").strip()
+    if h:
+        return h
+    with db_conn() as conn:
+        r = conn.execute("SELECT host FROM servers ORDER BY is_local DESC, id ASC LIMIT 1").fetchone()
+    return r["host"] if r else ""
+
+def sub_urls(acc_id, user_id, bug="", mode=""):
+    base = f"http://{sub_host()}:{SUB_PORT}/sub/{sub_token(acc_id, user_id)}"
+    q = ""
+    if bug:
+        q = f"&bug={urllib.parse.quote(str(bug).strip(), safe='')}"
+        if mode:
+            q += f"&mode={urllib.parse.quote(str(mode).strip(), safe='')}"
+    return {t: f"{base}?target={t}{q}" for t in ("v2ray", "clash", "singbox")}
+
+def sub_fetch(acc_id, user_id, target, bug="", mode=""):
+    """Ambil payload subscription dari ws-bridge lokal (satu sumber kebenaran)."""
+    url = sub_urls(acc_id, user_id, bug, mode)[target]
+    try:
+        with urllib.request.urlopen(url, timeout=8) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+def sub_node_count(acc_id, user_id, bug="", mode=""):
+    body = sub_fetch(acc_id, user_id, "v2ray", bug, mode)
+    if not body:
+        return 0
+    try:
+        return len([x for x in base64.b64decode(body).decode("utf-8", "replace").splitlines() if x.strip()])
+    except Exception:
+        return 0
+
+def sub_last_update(acc_id):
+    return get_setting(f"sub_upd_{int(acc_id)}", "") or "-"
+
 def get_bug_presets_list():
     with db_conn() as conn:
         rows = conn.execute("SELECT bug_host FROM bug_presets ORDER BY id ASC").fetchall()
@@ -6674,6 +7012,155 @@ async def render_injected_config_screen(msg_or_cb, acc_id: int, mode: str, bug_v
     else:
         await safe_edit_Basic(msg_or_cb, text_out, reply_markup=kb)
 
+SMART_SUB_TEXT = (
+    "🔗 <b>SMART SUBSCRIPTION (AUTO-UPDATE)</b>\n"
+    "├ 🔑 Akun       : <b>{uname}</b> ({proto})\n"
+    "├ 🖥️ Server Aktif : {srv_name} ({domain})\n"
+    "├ 🎯 Bug Prioritas: {bug} ({mode})\n"
+    "├ 📡 Total Node  : <b>{nodes} Variasi Node</b> (TLS/NTLS + Preset)\n"
+    "├ 🔄 Last Update : {last_upd}\n"
+    "└ ⏳ Expired     : {exp}"
+)
+
+async def send_smart_sub(target, acc_id, edit=False):
+    with db_conn() as conn:
+        acc = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
+        if not acc:
+            return
+        srv = conn.execute("SELECT * FROM servers WHERE id=?", (acc["server_id"],)).fetchone() \
+              or conn.execute("SELECT * FROM servers ORDER BY is_local DESC, id ASC LIMIT 1").fetchone()
+    if acc["protocol"] not in ("vmess", "vless", "trojan"):
+        await target.answer("Akun SSH tidak punya subscription. Pakai menu CONFIG SSH.")
+        return
+
+    uname = acc["username"]
+    domain = srv["host"] if srv else ""
+    srv_name = (srv["name"] if srv else "") or domain
+    bug_val = acc["custom_bug"] if "custom_bug" in acc.keys() and acc["custom_bug"] else get_setting("bug_host", "v.whatsapp.net")
+    mode = acc["bug_mode"] if "bug_mode" in acc.keys() and acc["bug_mode"] else "wildcard"
+    urls = sub_urls(acc_id, acc["user_id"], bug_val, mode)
+
+    nodes, last_upd, exp = await asyncio.gather(
+        asyncio.to_thread(sub_node_count, acc_id, acc["user_id"], bug_val, mode),
+        asyncio.to_thread(sub_last_update, acc_id),
+        asyncio.to_thread(lambda: "Unlimited" if acc["expired_at"] >= 4000000000
+                          else datetime.fromtimestamp(acc["expired_at"]).strftime("%Y-%m-%d %H:%M:%S WIB")),
+    )
+    if nodes == 0:
+        nodes_note = "0 (server sub belum siap)"
+    else:
+        nodes_note = str(nodes)
+
+    txt = SMART_SUB_TEXT.format(
+        uname=html.escape(uname), proto=acc["protocol"].upper(),
+        srv_name=html.escape(srv_name), domain=html.escape(domain),
+        bug=html.escape(bug_val or "-"), mode=html.escape((mode or "wildcard").upper()),
+        nodes=nodes_note, last_upd=html.escape(last_upd), exp=html.escape(exp),
+    )
+    txt += ("\n\n🔗 <b>1. Universal / v2rayNG / Streisand (Base64)</b>\n"
+            f"<pre><code class=\"language-Url\">{html.escape(urls['v2ray'])}</code></pre>"
+            "\n🔗 <b>2. OpenClash / Mihomo / Clash (YAML)</b>\n"
+            f"<pre><code class=\"language-Url\">{html.escape(urls['clash'])}</code></pre>"
+            "\n🔗 <b>3. Sing-box / NekoBox / SFI (JSON)</b>\n"
+            f"<pre><code class=\"language-Url\">{html.escape(urls['singbox'])}</code></pre>"
+            "\n💡 <i>Klik 🔄 Update Subscription Sekarang untuk menyinkronkan perubahan "
+            "server/protokol/bug terbaru, atau unduh file config siap pakai di bawah ini:</i>")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Update Subscription Sekarang", callback_data=f"sub_refresh:{acc_id}")],
+        [InlineKeyboardButton(text="🎯 Atur Bug Subscription", callback_data=f"sub_bug:{acc_id}")],
+        [InlineKeyboardButton(text="🛠️ Kelola Mandiri", callback_data=f"view_my:{acc_id}")],
+        [InlineKeyboardButton(text="📥 File Clash (.yaml)", callback_data=f"sub_file:{acc_id}:clash"),
+         InlineKeyboardButton(text="📥 File Sing-box (.json)", callback_data=f"sub_file:{acc_id}:singbox")],
+        [InlineKeyboardButton(text="📱 QR Sub v2rayNG", callback_data=f"sub_qr:{acc_id}:v2ray"),
+         InlineKeyboardButton(text="📱 QR Sub Sing-box", callback_data=f"sub_qr:{acc_id}:singbox")],
+        [InlineKeyboardButton(text="⬅️ Kembali ke Akun Saya", callback_data="my_accounts")],
+    ])
+    if edit:
+        await safe_edit_Basic(target, txt, reply_markup=kb)
+    else:
+        await target.answer(txt, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
+
+@router.callback_query(F.data.startswith("sub_refresh:"))
+async def cb_sub_refresh(cb: CallbackQuery):
+    acc_id = int(cb.data.split(":", 1)[1])
+    with db_conn() as conn:
+        acc = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
+        if not acc or (cb.from_user.id != ADMIN_ID and acc["user_id"] != cb.from_user.id):
+            await cb.answer("Akun tidak ditemukan.", show_alert=True)
+            return
+    set_setting(f"sub_upd_{acc_id}", datetime.now().strftime("%Y-%m-%d %H:%M:%S WIB"))
+    await send_smart_sub(cb.message, acc_id, edit=True)
+    await cb.answer("✅ Subscription diperbarui!")
+
+@router.callback_query(F.data.startswith("sub_file:"))
+async def cb_sub_file(cb: CallbackQuery):
+    _, acc_id_s, kind = cb.data.split(":")
+    acc_id = int(acc_id_s)
+    with db_conn() as conn:
+        acc = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
+        if not acc or (cb.from_user.id != ADMIN_ID and acc["user_id"] != cb.from_user.id):
+            await cb.answer("Akun tidak ditemukan.", show_alert=True)
+            return
+    bug_val = acc["custom_bug"] if "custom_bug" in acc.keys() and acc["custom_bug"] else get_setting("bug_host", "v.whatsapp.net")
+    mode = acc["bug_mode"] if "bug_mode" in acc.keys() and acc["bug_mode"] else "wildcard"
+    body = await asyncio.to_thread(sub_fetch, acc_id, acc["user_id"], kind, bug_val, mode)
+    if not body:
+        await cb.answer("Server subscription belum siap (port 2095).", show_alert=True)
+        return
+    ext = "yaml" if kind == "clash" else "json"
+    path = f"/tmp/sub_{acc_id}_{kind}.{ext}"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(body)
+    await cb.message.answer_document(FSInputFile(path, filename=f"{acc['username']}-{kind}.{ext}"),
+                                     caption=f"📥 File {kind.upper()} — {html.escape(acc['username'])}",
+                                     parse_mode="HTML")
+    try:
+        os.remove(path)
+    except Exception:
+        pass
+    await cb.answer("✅ File dikirim!")
+
+@router.callback_query(F.data.startswith("sub_qr:"))
+async def cb_sub_qr(cb: CallbackQuery):
+    _, acc_id_s, kind = cb.data.split(":")
+    acc_id = int(acc_id_s)
+    with db_conn() as conn:
+        acc = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
+        if not acc or (cb.from_user.id != ADMIN_ID and acc["user_id"] != cb.from_user.id):
+            await cb.answer("Akun tidak ditemukan.", show_alert=True)
+            return
+    bug_val = acc["custom_bug"] if "custom_bug" in acc.keys() and acc["custom_bug"] else get_setting("bug_host", "v.whatsapp.net")
+    mode = acc["bug_mode"] if "bug_mode" in acc.keys() and acc["bug_mode"] else "wildcard"
+    url = sub_urls(acc_id, acc["user_id"], bug_val, mode)[kind]
+    qr_path = f"/tmp/qr_sub_{acc_id}_{kind}.png"
+    p = subprocess.Popen(["qrencode", "-s", "8", "-m", "2", "-o", qr_path], stdin=subprocess.PIPE, text=True)
+    p.communicate(url)
+    if os.path.exists(qr_path):
+        await cb.message.answer_photo(photo=FSInputFile(qr_path),
+            caption=f"📱 <b>QR SUB {kind.upper()} — {html.escape(acc['username'])}</b>\n"
+                    f"<pre><code class=\"language-Url\">{html.escape(url)}</code></pre>",
+            parse_mode="HTML")
+        os.remove(qr_path)
+        await cb.answer("✅ QR dikirim!")
+    else:
+        await cb.answer("qrencode tidak tersedia.", show_alert=True)
+
+@router.callback_query(F.data.startswith("sub_bug:"))
+async def cb_sub_bug(cb: CallbackQuery):
+    acc_id = int(cb.data.split(":", 1)[1])
+    with db_conn() as conn:
+        acc = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
+        if not acc or (cb.from_user.id != ADMIN_ID and acc["user_id"] != cb.from_user.id):
+            await cb.answer("Akun tidak ditemukan.", show_alert=True)
+            return
+    with db_conn() as conn:
+        srv = conn.execute("SELECT * FROM servers WHERE id=?", (acc["server_id"],)).fetchone() \
+              or conn.execute("SELECT * FROM servers ORDER BY is_local DESC, id ASC LIMIT 1").fetchone()
+    txt, kb = build_inject_mode_menu(acc, srv)
+    await safe_edit_Basic(cb, txt, reply_markup=kb)
+    await cb.answer()
+
 @router.callback_query(F.data.startswith("inj_extra:"))
 async def cb_inj_extra(cb: CallbackQuery):
     _, acc_id_str, action = cb.data.split(":")
@@ -6703,28 +7190,8 @@ async def cb_inj_extra(cb: CallbackQuery):
         )
         await cb.answer("✅ Config Sing-box (JSON) dikirim!")
     elif action == "sub":
-        if acc["protocol"] not in ("vmess", "vless", "trojan"):
-            await cb.answer("Akun SSH tidak punya subscription. Pakai menu CONFIG SSH.", show_alert=True)
-            return
-        sub_https = f"https://{domain}/sub/{uname}"
-        sub_http = f"http://{domain}/sub/{uname}"
-        note_sni = ""
-        if mode == "sni" and bug_val and bug_val != domain:
-            note_sni = ("\n⚠️ <i>Mode SNI memakai bug " + html.escape(bug_val) +
-                        ". Sertifikat server bukan untuk nama itu, jadi di aplikasi "
-                        "klien aktifkan <b>Allow Insecure</b> / <b>Skip Cert Verify</b>.</i>")
-        await cb.message.answer(
-            f"🔗 <b>LINK SUBSCRIPTION (AUTO-UPDATE) — {html.escape(uname)}</b>\n"
-            "────────────────────────────\n"
-            "• <b>HTTPS (Port 443):</b>\n"
-            f"<pre><code class=\"language-Https\">{html.escape(sub_https)}</code></pre>\n\n"
-            "• <b>HTTP (Port 80):</b>\n"
-            f"<pre><code class=\"language-Http\">{html.escape(sub_http)}</code></pre>\n"
-            "<i>Tempelkan link di atas pada v2rayNG, NekoBox, Hiddify, atau Clash untuk sinkronisasi otomatis.</i>"
-            + note_sni,
-            parse_mode="HTML"
-        )
-        await cb.answer("✅ Link Subscription dikirim!")
+        await send_smart_sub(cb.message, acc_id, edit=False)
+        await cb.answer("✅ Smart Subscription dikirim!")
     elif action in ("qrtls", "qrntls"):
         target_link = tls_link if action == "qrtls" else ntls_link
         label_qr = "TLS (Port 443)" if action == "qrtls" else "NTLS (Port 80)"
@@ -9141,6 +9608,7 @@ ufw allow 8080/tcp >/dev/null 2>&1 || true
 ufw allow 8880/tcp >/dev/null 2>&1 || true
 ufw allow 2052/tcp >/dev/null 2>&1 || true
 ufw allow 2053/tcp >/dev/null 2>&1 || true
+ufw allow 2095/tcp >/dev/null 2>&1 || true
 ufw allow 2082/tcp >/dev/null 2>&1 || true
 ufw allow 2083/tcp >/dev/null 2>&1 || true
 ufw allow 90/tcp >/dev/null 2>&1 || true
