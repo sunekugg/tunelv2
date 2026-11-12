@@ -80,9 +80,33 @@ if ! ip -6 route show default 2>/dev/null | grep -q .; then
 fi
 
 # 0c. Mirror apt rusak (mis. mirrors.tencentyun.com -> 169.254.0.3, tanpa DNS valid)
-CUR_MIRROR=$(awk '/^deb /{for(i=1;i<=NF;i++) if($i ~ /^https?:\/\//){print $i; exit}}' /etc/apt/sources.list 2>/dev/null; \
-             grep -hoE 'https?://[^ /]+' /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null | sort -u | head -1)
-CUR_MIRROR=$(echo "$CUR_MIRROR" | head -1 | sed 's#/$##')
+# Deteksi mirror aktif. Debian 12/13 memakai skema deb822 (.sources) dan
+# /etc/apt/sources.list hanya berisi komentar -> wajib baca field URIs.
+# Repo pihak ketiga (nodesource, docker, dll) JANGAN dianggap mirror distro.
+distro_mirror_of() {
+    local f uri
+    for f in /etc/apt/sources.list; do
+        [[ -f "$f" ]] || continue
+        awk '/^deb /{for(i=1;i<=NF;i++) if($i ~ /^https?:\/\//){print $i; exit}}' "$f" 2>/dev/null
+    done
+    for f in /etc/apt/sources.list.d/*.sources; do
+        [[ -f "$f" ]] || continue
+        grep -qiE 'nodesource|docker|google|microsoft|brave|signal|tailscale' "$f" && continue
+        # sed (bukan awk -F': *') karena nilai bisa memuat '://'
+        uri=$(sed -n 's/^[Uu][Rr][Ii][Ss]:[[:space:]]*//p' "$f" 2>/dev/null | head -1)
+        [[ -n "$uri" ]] && echo "${uri%% *}"
+    done
+    return 0
+}
+CUR_MIRROR=$(distro_mirror_of | head -1 | sed 's#/$##')
+# mirror+file:///... = mirror lokal apt (bukan http) -> resolve isinya
+if [[ "$CUR_MIRROR" == mirror+file://* ]]; then
+    # mirror+file:///etc/apt/mirrors/debian.list -> isi file = URL mirror nyata
+    _mf="${CUR_MIRROR#mirror+file://}"
+    _mf="/${_mf#/}"
+    CUR_MIRROR=$(grep -m1 -oE 'https?://[^ ]+' "$_mf" 2>/dev/null | sed 's#/$##')
+fi
+CUR_MIRROR=$(echo "$CUR_MIRROR" | head -1)
 if ! mirror_valid "$CUR_MIRROR"; then
     echo "  Mirror rusak/tidak valid: ${CUR_MIRROR:-<kosong>} -> cari pengganti..."
     if [[ "$OS_ID" == "debian" ]]; then
@@ -97,8 +121,23 @@ if ! mirror_valid "$CUR_MIRROR"; then
     if [[ -n "$CHOSEN" ]]; then
         echo "  Mirror pengganti: $CHOSEN"
         if [[ "$OS_ID" == "debian" ]]; then
-            printf "deb %s %s main contrib non-free\ndeb %s %s-updates main contrib non-free\ndeb %s %s-security main contrib non-free\n" \
-                "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" > /etc/apt/sources.list
+            # Debian >= 12: sumber aktif ada di .sources (deb822). Tulis ke situ
+            # supaya sources.list baru tidak diabaikan/di-override debian.sources.
+            if ls /etc/apt/sources.list.d/*.sources >/dev/null 2>&1; then
+                for _sf in /etc/apt/sources.list.d/*.sources; do
+                    [[ -f "$_sf" ]] || continue
+                    case "$_sf" in *.sources) ;; *) continue ;; esac
+                    grep -qiE 'nodesource|docker|google|microsoft|brave|signal|tailscale' "$_sf" && continue
+                    mv -f "$_sf" "$_sf.disabled" 2>/dev/null || true
+                done
+                printf "Types: deb\nURIs: %s\nSuites: %s %s-updates\nComponents: main contrib non-free non-free-firmware\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://security.debian.org/debian-security\nSuites: %s-security\nComponents: main contrib non-free non-free-firmware\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n" \
+                    "$CHOSEN" "$OS_CODENAME" "$OS_CODENAME" "$OS_CODENAME" \
+                    > /etc/apt/sources.list.d/debian.sources
+                : > /etc/apt/sources.list
+            else
+                printf "deb %s %s main contrib non-free non-free-firmware\ndeb %s %s-updates main contrib non-free non-free-firmware\ndeb %s %s-security main contrib non-free non-free-firmware\n" \
+                    "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" "$CHOSEN" "$OS_CODENAME" > /etc/apt/sources.list
+            fi
         else
             SEC="http://security.ubuntu.com/ubuntu"
             mirror_valid "$SEC" || SEC="$CHOSEN"
@@ -110,7 +149,7 @@ if ! mirror_valid "$CUR_MIRROR"; then
     fi
     for f in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
         [[ -f "$f" ]] || continue
-        if grep -qE 'tencentyun|169\.254\.' "$f" 2>/dev/null; then
+        if grep -qE 'tencentyun|169\.254\.|mirror+file:///etc/apt/mirrors/tencent' "$f" 2>/dev/null; then
             mv -f "$f" "$f.disabled" 2>/dev/null || true
             echo "  Dinonaktifkan: $(basename "$f")"
         fi
@@ -187,17 +226,34 @@ fi
 # 2. Instalasi Paket Dasar (Support Ubuntu <= 24.04 & Debian <= 13)
 echo "[2/6] Menginstal paket sistem & dependensi..."
 apt-get -o Acquire::ForceIPv4=true update -y -o DPkg::Lock::Timeout=120
-apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o DPkg::Lock::Timeout=120 \
-    curl wget jq git unzip tar socat cron net-tools lsof psmisc \
-    iptables iptables-persistent ipset netfilter-persistent fail2ban certbot \
-    nginx openssh-server dropbear squid openvpn easy-rsa \
-    build-essential zlib1g-dev bzip2 python3 python3-pip python3-venv \
-    sqlite3 bc vnstat wondershaper logrotate qrencode openssl >/dev/null 2>&1 || true
-apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    libnginx-mod-stream >/dev/null 2>&1 || \
-apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    nginx-full >/dev/null 2>&1 || true
-apt-get -o Acquire::ForceIPv4=true install -y -o DPkg::Lock::Timeout=60 libcrypt-dev python3-full >/dev/null 2>&1 || true
+# Paket INTI: wajib ada. Dipasang berkelompok kecil supaya satu paket hilang
+# di distro tertentu tidak menggagalkan seluruh daftar (apt = all-or-nothing).
+apt_install_grp() {
+    apt-get -o Acquire::ForceIPv4=true install -y \
+        -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+        -o DPkg::Lock::Timeout=120 "$@" >/dev/null 2>&1 && return 0
+    # Kelompok gagal -> pasang satu per satu agar sisanya tetap masuk
+    for _p in "$@"; do
+        apt-get -o Acquire::ForceIPv4=true install -y \
+            -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
+            -o DPkg::Lock::Timeout=120 "$_p" >/dev/null 2>&1 || \
+            echo "  (paket opsional dilewati: $_p)"
+    done
+    return 0
+}
+apt_install_grp curl wget jq git unzip tar socat cron net-tools lsof psmisc
+apt_install_grp iptables iptables-persistent ipset netfilter-persistent fail2ban
+# nginx + modul stream: WAJIB. Di Debian, 'apt install nginx' TIDAK menarik
+# libnginx-mod-stream (hanya nginx-common), padahal nginx.conf kita memakai {}
+# `stream {}`. Tanpa modul ini `nginx -t` gagal -> semua port tutup.
+apt_install_grp nginx libnginx-mod-stream
+apt_install_grp openssh-server dropbear
+apt_install_grp build-essential zlib1g-dev bzip2 python3 python3-pip python3-venv
+apt_install_grp sqlite3 bc logrotate qrencode openssl
+# Paket opsional: kalau tak ada di repo distro, sistem tetap jalan.
+apt_install_grp certbot squid openvpn easy-rsa vnstat wondershaper python3-full libcrypt-dev
+# Fallback: sebagian distro lama menaruh modul stream di paket nginx-full.
+command -v nginx >/dev/null && nginx -V 2>&1 | grep -q stream || apt_install_grp nginx-full
 
 PUBLIC_IP=$(curl -s4 --max-time 5 ifconfig.me || curl -s4 --max-time 5 api.ipify.org || echo "127.0.0.1")
 GEO_JSON=$(curl -4 -s --max-time 5 https://ipinfo.io/json || echo "{}")
@@ -1562,6 +1618,24 @@ def get_default_iface():
     out = run_cmd("ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}'").stdout.strip()
     return out if out else "eth0"
 
+def set_iface_speed(iface: str, mbps: int):
+    """Batasi bandwidth interface. mbps<=0 = hapus batas.
+    Pakai `tc` langsung (bagian dari iproute2, selalu ada di Ubuntu/Debian);
+    wondershaper hanya wrapper tipis dan TIDAK tersedia di Debian 13.
+    """
+    if not iface:
+        return False
+    if mbps <= 0:
+        run_cmd(f"tc qdisc del dev {iface} root 2>/dev/null || true")
+        return True
+    kbit = int(mbps) * 1024
+    run_cmd(
+        f"tc qdisc del dev {iface} root 2>/dev/null || true; "
+        f"tc qdisc add dev {iface} root handle 1: htb default 1 2>/dev/null || true; "
+        f"tc class add dev {iface} parent 1: classid 1:1 htb rate {kbit}kbit ceil {kbit}kbit 2>/dev/null || true"
+    )
+    return True
+
 def read_cpu_times():
     try:
         with open("/proc/stat", "r") as f:
@@ -2064,10 +2138,7 @@ def apply_global_speed_limit(mbps: int):
     iface = get_default_iface()
     if not iface:
         return True, "OK"
-    if mbps <= 0:
-        run_cmd(f"wondershaper -c -a {iface}")
-    else:
-        run_cmd(f"wondershaper -a {iface} -d {mbps*1024} -u {mbps*1024}")
+    set_iface_speed(iface, mbps)
     return True, "OK"
 
 def provision_remote_vps(srv_row):
@@ -2093,7 +2164,7 @@ def provision_remote_vps(srv_row):
         install_cmd = (
             "nohup bash -c '"
             "export DEBIAN_FRONTEND=noninteractive; "
-            "apt-get -o Acquire::ForceIPv4=true update -y && apt-get -o Acquire::ForceIPv4=true install -y curl wget jq unzip ipset nginx libnginx-mod-stream openssh-server dropbear python3 wondershaper vnstat >/dev/null 2>&1; "
+            "apt-get -o Acquire::ForceIPv4=true update -y && apt-get -o Acquire::ForceIPv4=true install -y curl wget jq unzip ipset nginx libnginx-mod-stream openssh-server dropbear python3 vnstat >/dev/null 2>&1; "
             "sed -i \"/^Banner /d\" /etc/ssh/sshd_config; echo \"Banner /etc/issue.net\" >> /etc/ssh/sshd_config; "
             "systemctl restart ssh || systemctl restart sshd; "
             "chmod +x /etc/vpn-bot/*.py 2>/dev/null; "
@@ -6175,8 +6246,7 @@ async def msg_admin_set_val(msg: Message, state: FSMContext):
         try:
             mbps = int(val)
             iface = engine.get_default_iface()
-            if mbps > 0 and iface: engine.run_cmd(f"wondershaper -a {iface} -d {mbps*1024} -u {mbps*1024}")
-            elif iface: engine.run_cmd(f"wondershaper -c -a {iface}")
+            if iface: engine.set_iface_speed(iface, mbps)
         except Exception:
             pass
     await state.clear()
@@ -9449,17 +9519,25 @@ fi
 # 2. Instalasi Paket Dasar (Support Ubuntu <= 24.04 & Debian <= 13)
 echo "[2/6] Menginstal paket sistem & dependensi..."
 apt-get -o Acquire::ForceIPv4=true update -y -o DPkg::Lock::Timeout=120
-apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o DPkg::Lock::Timeout=120 \\
-    curl wget jq git unzip tar socat cron net-tools lsof psmisc \\
-    iptables iptables-persistent ipset netfilter-persistent fail2ban certbot \\
-    nginx openssh-server dropbear squid openvpn easy-rsa \\
-    build-essential zlib1g-dev bzip2 python3 python3-pip python3-venv \\
-    sqlite3 bc vnstat wondershaper logrotate qrencode openssl >/dev/null 2>&1 || true
-apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \\
-    libnginx-mod-stream >/dev/null 2>&1 || \\
-apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \\
-    nginx-full >/dev/null 2>&1 || true
-apt-get -o Acquire::ForceIPv4=true install -y -o DPkg::Lock::Timeout=60 libcrypt-dev python3-full >/dev/null 2>&1 || true
+apt_install_grp() {
+    apt-get -o Acquire::ForceIPv4=true install -y \\
+        -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \\
+        -o DPkg::Lock::Timeout=120 "$@" >/dev/null 2>&1 && return 0
+    for _p in "$@"; do
+        apt-get -o Acquire::ForceIPv4=true install -y \\
+            -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \\
+            -o DPkg::Lock::Timeout=120 "$_p" >/dev/null 2>&1 || true
+    done
+    return 0
+}
+apt_install_grp curl wget jq git unzip tar socat cron net-tools lsof psmisc
+apt_install_grp iptables iptables-persistent ipset netfilter-persistent fail2ban
+apt_install_grp nginx openssh-server dropbear
+apt_install_grp build-essential zlib1g-dev bzip2 python3 python3-pip python3-venv
+apt_install_grp sqlite3 bc logrotate qrencode openssl
+apt_install_grp certbot squid openvpn easy-rsa vnstat wondershaper python3-full libcrypt-dev
+apt_install_grp nginx libnginx-mod-stream
+command -v nginx >/dev/null && nginx -V 2>&1 | grep -q stream || apt_install_grp nginx-full
 
 PUBLIC_IP=$(curl -s4 --max-time 5 ifconfig.me || curl -s4 --max-time 5 api.ipify.org || echo "127.0.0.1")
 GEO_JSON=$(curl -4 -s --max-time 5 https://ipinfo.io/json || echo "{}")
@@ -9995,7 +10073,7 @@ apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confde
     nginx >/dev/null 2>&1 || true
 
 apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    curl wget unzip openssl python3 psmisc lsof socat net-tools vnstat wondershaper ipset jq >/dev/null 2>&1 || true
+    curl wget unzip openssl python3 psmisc lsof socat net-tools vnstat ipset jq >/dev/null 2>&1 || true
 
 ufw disable >/dev/null 2>&1 || true
 iptables -P INPUT ACCEPT 2>/dev/null || true
