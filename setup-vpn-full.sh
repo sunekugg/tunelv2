@@ -4686,6 +4686,8 @@ def mandiri_acc(cb):
     return acc
 
 def build_mandiri_text(acc, srv):
+    if srv is None:
+        srv = {"name": "-", "host": "-"}
     now = int(time.time())
     active_n = int(acc["active_sessions"] or 0)
     lim = int(acc["ip_limit"] or 0)
