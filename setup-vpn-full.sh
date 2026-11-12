@@ -1485,32 +1485,98 @@ def parse_external_vpn_link(link_str: str):
 
     raise ValueError("Format link tidak didukung. Gunakan vmess://, vless://, atau trojan://")
 
-def apply_server_speed(srv_row, mbps: int):
-    # PENTING: wondershaper/tc bekerja per-interface, bukan per-user.
-    # VPS lokal berbagi interface dgn limit global (apply_global_speed_limit) —
-    # set per-server lokal hanya menimpa global, jadi kita tolak dgn pesan jelas.
-    if srv_row["is_local"] == 1:
-        g = get_int_setting_safe("default_speed_mbps", 0)
-        return False, (
-            f"VPS Lokal memakai Speed Global ({g if g > 0 else 'Unlimited'} Mbps). "
-            "Set limit ini di menu Pengaturan → default_speed_mbps. "
-            "Limit per-server hanya berlaku untuk VPS Remote (interface terpisah)."
-        )
-    import paramiko
-    try:
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(srv_row["host"], port=srv_row["ssh_port"], username=srv_row["ssh_user"], password=srv_row["ssh_pass"], timeout=10)
-        cmd = (
-            "IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}'); "
-            + (f"wondershaper -a $IFACE -d {mbps*1024} -u {mbps*1024}" if mbps > 0 else "wondershaper -c -a $IFACE")
-        )
-        ssh.exec_command(cmd)
-        ssh.close()
-        return True, f"Speed limit {mbps if mbps > 0 else 'Unlimited'} Mbps diterapkan di VPS Remote."
-    except Exception as e:
-        return False, str(e)
+# --- LIMIT BANDWIDTH PER-AKUN (hashlimit per-IP klien, bukan wondershaper server-wide) ---
+# Xray tidak punya rate-limit per user native; trik yang dipakai: batasi per IP klien
+# akun itu (accounts.last_ips sudah diisi scanner multi-login). Cap kasar tapi nyata.
+def _bw_ipset_name(uname: str) -> str:
+    import hashlib
+    return "acc_" + hashlib.sha1(uname.encode()).hexdigest()[:12].lower()
 
+def _bw_chain_name(uname: str) -> str:
+    # iptables batasi nama chain maks 28 karakter
+    import hashlib
+    return "ACCBW_" + hashlib.sha1(uname.encode()).hexdigest()[:10].upper()
+
+def _ssh_run(ssh, cmd: str):
+    try:
+        _, out, _ = ssh.exec_command(cmd, timeout=15)
+        out.channel.recv_exit_status()
+        return out.read().decode("utf-8", "ignore").strip()
+    except Exception:
+        return ""
+
+def _bw_flush_cmds(uname: str) -> str:
+    """Hapus jump rule + chain + ipset milik satu akun. Idempoten."""
+    iset = _bw_ipset_name(uname)
+    chain = _bw_chain_name(uname)
+    return (
+        f"for C in INPUT OUTPUT; do for S in src dst; do "
+        f"iptables -t mangle -D $C -m set --match-set {iset} $S -j {chain} 2>/dev/null; done; done; "
+        f"iptables -t mangle -F {chain} 2>/dev/null; "
+        f"iptables -t mangle -X {chain} 2>/dev/null; "
+        f"ipset destroy {iset} 2>/dev/null"
+    )
+
+def _bw_apply_cmds(uname: str, kbps: int, ips: list) -> str:
+    """Rangkaian perintah iptables/ipset untuk satu akun. kbps<=0 -> bersihkan saja."""
+    flush = _bw_flush_cmds(uname)
+    if kbps <= 0:
+        return flush + "; true"
+    iset = _bw_ipset_name(uname)
+    chain = _bw_chain_name(uname)
+    q = sh_quote
+    add_ips = " ".join(f"ipset add {iset} {q(ip)} -exist;" for ip in ips if ip)
+    burst = kbps * 2
+    return (
+        flush + "; "
+        f"ipset create {iset} hash:ip -exist; {add_ips} "
+        # Chain per-akun: hashlimit di atas batas -> DROP, sisanya RETURN
+        f"iptables -t mangle -N {chain}; "
+        f"iptables -t mangle -A {chain} -m hashlimit --hashlimit-name {q('bw_' + uname)} "
+        f"--hashlimit-above {kbps}kb/s --hashlimit-burst {burst}kb "
+        f"--hashlimit-mode srcip,dstip --hashlimit-htable-expire 300000 -j DROP; "
+        f"iptables -t mangle -A {chain} -j RETURN; "
+        # Download (OUTPUT, dst = IP klien) + Upload (INPUT, src = IP klien)
+        f"iptables -t mangle -A OUTPUT -m set --match-set {iset} dst -j {chain}; "
+        f"iptables -t mangle -A INPUT -m set --match-set {iset} src -j {chain}; true"
+    )
+
+def apply_account_bandwidth(srv_row, uname: str, mbps: int, ips=None):
+    """Terapkan / cabut limit bandwidth per-akun. mbps=0 -> unlimited (rule dibersihkan).
+    ips: daftar IP klien akun (kalau None, ambil dari accounts.last_ips)."""
+    if not srv_row:
+        return False, "Server tidak diketahui."
+    kbps = int(mbps) * 1000 if mbps and int(mbps) > 0 else 0
+    if ips is None:
+        try:
+            with _eng_db() as conn:
+                r = conn.execute("SELECT last_ips FROM accounts WHERE username=?", (uname,)).fetchone()
+            ips = [x.strip() for x in (r["last_ips"] or "").replace(",", " ").split() if x.strip()] if r else []
+        except Exception:
+            ips = []
+    cmd = _bw_apply_cmds(uname, kbps, ips)
+    if srv_row["is_local"] == 1:
+        run_cmd(cmd)
+        return True, "OK"
+    try:
+        ssh = connect_remote_ssh(srv_row, timeout=10)
+    except Exception as e:
+        return False, f"SSH gagal: {e}"
+    try:
+        _ssh_run(ssh, cmd)
+        return True, "OK"
+    finally:
+        try:
+            ssh.close()
+        except Exception:
+            pass
+
+def remove_account_bandwidth(srv_row, uname: str):
+    """Bersihkan rule bandwidth saat akun dihapus."""
+    try:
+        apply_account_bandwidth(srv_row, uname, 0, ips=[])
+    except Exception:
+        pass
 
 def get_int_setting_safe(key: str, default: int = 0) -> int:
     try:
@@ -1535,11 +1601,8 @@ def provision_remote_vps(srv_row):
     if srv_row["is_local"] == 1:
         run_cmd("systemctl restart dropbear ssh xray vpn-ws-bridge nginx")
         return True, "Komponen & Banner di Server Lokal telah disinkronkan ulang."
-    import paramiko
     try:
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(srv_row["host"], port=srv_row["ssh_port"], username=srv_row["ssh_user"], password=srv_row["ssh_pass"], timeout=15)
+        ssh = connect_remote_ssh(srv_row, timeout=15)
         sftp = ssh.open_sftp()
         if os.path.exists("/etc/issue.net"):
             sftp.put("/etc/issue.net", "/etc/issue.net")
@@ -1602,38 +1665,25 @@ def lookup_host_geo(host_or_ip: str):
 # --- CEK KOMPONEN, INSTALL PENUH & STATISTIK LIVE REMOTE VPS ---
 SSH_KEY_FILE = "/etc/vpn-bot/id_ed25519"
 SSH_PUB_FILE = "/etc/vpn-bot/id_ed25519.pub"
-AUTH_CACHE_FILE = "/etc/vpn-bot/.vps_auth_cache.json"
-VOLATILE_PASS_CACHE = {}
+AUTH_CACHE_FILE = "/etc/vpn-bot/.vps_auth_cache.json"   # legacy — dihapus saat start
+VOLATILE_PASS_CACHE = {}   # password root HANYA di RAM, tidak pernah ke disk
+
+def _purge_legacy_pass_cache():
+    """Hapus cache password lama (base64 di disk) dari versi sebelumnya."""
+    try:
+        if os.path.exists(AUTH_CACHE_FILE):
+            os.remove(AUTH_CACHE_FILE)
+    except Exception:
+        pass
 
 def _save_obf_pass(ip_addr: str, pwd: str):
+    """Simpan password root di RAM saja (dipakai selama proses pairing SSH key)."""
     if not ip_addr or not pwd:
         return
     VOLATILE_PASS_CACHE[ip_addr] = pwd
-    try:
-        data = {}
-        if os.path.exists(AUTH_CACHE_FILE):
-            with open(AUTH_CACHE_FILE, "r") as f:
-                data = json.load(f)
-        data[ip_addr] = base64.b64encode(pwd.encode("utf-8")).decode("utf-8")
-        with open(AUTH_CACHE_FILE, "w") as f:
-            json.dump(data, f)
-        os.chmod(AUTH_CACHE_FILE, 0o600)
-    except Exception:
-        pass
 
 def _load_obf_pass(ip_addr: str):
-    if ip_addr in VOLATILE_PASS_CACHE:
-        return VOLATILE_PASS_CACHE[ip_addr]
-    try:
-        if os.path.exists(AUTH_CACHE_FILE):
-            with open(AUTH_CACHE_FILE, "r") as f:
-                data = json.load(f)
-            b64 = data.get(ip_addr)
-            if b64:
-                return base64.b64decode(b64.encode("utf-8")).decode("utf-8")
-    except Exception:
-        pass
-    return None
+    return VOLATILE_PASS_CACHE.get(ip_addr)
 
 def get_srv_ipv4(srv_row) -> str:
     import socket
@@ -1693,6 +1743,52 @@ def connect_remote_ssh(srv_row, temp_pass: str = None, timeout: int = 12):
         return ssh
 
     raise RuntimeError("Kunci SSH belum terhubung. Silakan klik tombol '✏️ Edit Login' lalu masukkan Password Root.")
+
+def check_server_online(srv_row, timeout: int = 4) -> bool:
+    """Cek TCP port SSH server hidup. Dipakai agar akun tidak dibuat ke server mati."""
+    import socket
+    ip = get_srv_ipv4(srv_row)
+    port = int(srv_row["ssh_port"] or 22) if "ssh_port" in srv_row.keys() else 22
+    if not ip:
+        return False
+    try:
+        with socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+def server_label(srv_row, with_host: bool = False) -> str:
+    """Label seragam utk tombol/menu — tidak pernah menampilkan '()' kosong."""
+    name = (srv_row["name"] or "Server").strip()
+    city = ""
+    try:
+        city = (srv_row["city"] or "").strip()
+    except Exception:
+        city = ""
+    if srv_row["is_local"] == 1:
+        loc = "Lokal"
+    else:
+        loc = city or "Remote"
+    txt = name if loc.lower() == name.lower() else f"{name} ({loc})"
+    if with_host:
+        txt += f" — {srv_row['host']}"
+    return txt
+
+_purge_legacy_pass_cache()
+
+def srv_of(acc_row):
+    """Ambil baris server milik sebuah akun (None kalau server sudah dihapus)."""
+    try:
+        with _eng_db() as conn:
+            return conn.execute("SELECT * FROM servers WHERE id=?", (acc_row["server_id"],)).fetchone()
+    except Exception:
+        return None
+
+def _eng_db():
+    """Koneksi DB dari sisi engine (bot.py py punya db_conn sendiri; ini salinan lokal)."""
+    conn = sqlite3.connect("/etc/vpn-bot/vpn_data.db", timeout=15)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def create_remote_account(srv_row, proto: str, uname: str, secret: str, exp_ssh_date: str):
     safe_username(uname)
@@ -3452,7 +3548,7 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
             kb_rows.append([
                 InlineKeyboardButton(text="🌐 Pindah Server", callback_data=f"move_srv_menu:{acc_id}")
             ])
-        kb_rows.append([InlineKeyboardButton(text=f"🗑 Hapus Akun ({uname})", callback_data=f"del_my:{acc_id}")])
+        kb_rows.append([InlineKeyboardButton(text=f"🗑 Hapus Akun ({uname})", callback_data=f"del_req:{acc_id}")])
 
     kb_rows.append([
         InlineKeyboardButton(text="👤 Akun Saya", callback_data="my_accounts"),
@@ -3977,8 +4073,7 @@ async def cb_my_accounts(cb: CallbackQuery):
             status_lbl = "🟢 Aktif"
             kb.append([
                 InlineKeyboardButton(text=f"📄 {r['username']} ({r['protocol'].upper()})", callback_data=f"view_my:{r['id']}"),
-                InlineKeyboardButton(text="🎯 Inject Bug", callback_data=f"inj_menu:{r['id']}"),
-                InlineKeyboardButton(text="🗑", callback_data=f"del_my:{r['id']}")
+                InlineKeyboardButton(text="🎯 Inject Bug", callback_data=f"inj_menu:{r['id']}")
             ])
             if r["protocol"] in ("vmess", "vless", "trojan"):
                 kb.append([
@@ -3994,6 +4089,8 @@ async def cb_my_accounts(cb: CallbackQuery):
             f"  Status : {status_lbl}\n"
             f"  Limit  : {'Unlimited' if r['ip_limit'] == 0 else str(r['ip_limit']) + ' IP'} | Exp: {exp_dt}"
         )
+    if rows and (cb.from_user.id == ADMIN_ID or True):
+        kb.append([InlineKeyboardButton(text="🗑 Kelola & Hapus Akun", callback_data="del_acc_menu")])
     kb.append([InlineKeyboardButton(text="⬅️ Kembali ke Menu Utama", callback_data="back_home")])
     await safe_edit_Basic(cb, "\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
@@ -4034,7 +4131,85 @@ async def cb_copy_fallback(cb: CallbackQuery):
     await cb.message.answer(f"Ketuk teks di bawah untuk menyalin:\n<code>{html.escape(val)}</code>", parse_mode="HTML")
     await cb.answer("Teks siap disalin!")
 
-@router.callback_query(F.data.startswith("del_my:"))
+# ==============================================================================
+# HAPUS AKUN — DIPISAH DARI MENU "AKUN SAYA"
+# Alur: Akun Saya (hanya lihat) -> 🗑 Kelola & Hapus Akun -> pilih akun -> konfirmasi
+# ==============================================================================
+@router.callback_query(F.data == "del_acc_menu")
+async def cb_del_acc_menu(cb: CallbackQuery):
+    allowed, reason = check_user_access(cb.from_user.id)
+    if not allowed:
+        await cb.answer(reason, show_alert=True)
+        return
+    now = int(time.time())
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT a.*, s.name as srv_name FROM accounts a LEFT JOIN servers s ON a.server_id = s.id "
+            "WHERE a.user_id=? AND a.expired_at > ? ORDER BY a.id DESC",
+            (cb.from_user.id, now)
+        ).fetchall()
+    if not rows:
+        await cb.answer("Tidak ada akun aktif untuk dihapus.", show_alert=True)
+        return
+    lines = [
+        "🗑 <b>KELOLA &amp; HAPUS AKUN</b>",
+        "────────────────────────────",
+        f"Total akun aktif: <b>{len(rows)}</b>",
+        "",
+        "<i>Pilih akun yang ingin dihapus. Penghapusan bersifat permanen dan akun langsung dicabut dari server (lokal maupun remote).</i>",
+        "────────────────────────────"
+    ]
+    kb = []
+    for r in rows:
+        lock = r["locked_until"] > now
+        srv_lbl = r["srv_name"] or "Server Utama"
+        mark = "🔒" if lock else "🟢"
+        lines.append(f"{mark} <code>{html.escape(r['username'])}</code> ({r['protocol'].upper()}) — {html.escape(srv_lbl)}")
+        kb.append([InlineKeyboardButton(
+            text=f"{'🔒 Terkunci' if lock else '🗑'} {r['username']} ({r['protocol'].upper()})",
+            callback_data=f"del_req:{r['id']}"
+        )])
+    kb.append([
+        InlineKeyboardButton(text="👤 Akun Saya", callback_data="my_accounts"),
+        InlineKeyboardButton(text="🏠 Menu Utama", callback_data="back_home")
+    ])
+    await safe_edit_Basic(cb, "\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@router.callback_query(F.data.startswith("del_req:"))
+async def cb_del_request(cb: CallbackQuery):
+    acc_id = int(cb.data.split(":")[1])
+    now = int(time.time())
+    with db_conn() as conn:
+        acc = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
+        if not acc or (cb.from_user.id != ADMIN_ID and acc["user_id"] != cb.from_user.id):
+            await cb.answer("Akun tidak ditemukan.", show_alert=True)
+            return
+        srv = conn.execute("SELECT * FROM servers WHERE id=?", (acc["server_id"],)).fetchone()
+    if acc["locked_until"] > now and cb.from_user.id != ADMIN_ID:
+        lock_str = datetime.fromtimestamp(acc["locked_until"]).strftime("%H:%M WIB")
+        await cb.answer(f"⛔ Akun TERKUNCI sampai {lock_str}. Tunggu masa kunci selesai.", show_alert=True)
+        return
+    srv_lbl = (srv["name"] if srv else "Server Utama")
+    srv_host = (srv["host"] if srv else DEFAULT_DOMAIN)
+    exp_dt = datetime.fromtimestamp(acc["expired_at"]).strftime("%Y-%m-%d %H:%M WIB") if acc["expired_at"] < 4000000000 else "Unlimited"
+    txt = (
+        "⚠️ <b>KONFIRMASI HAPUS AKUN</b>\n"
+        "────────────────────────────\n"
+        f"• Username : <code>{html.escape(acc['username'])}</code>\n"
+        f"• Protokol : <b>{acc['protocol'].upper()}</b>\n"
+        f"• Server   : {html.escape(srv_lbl)} (<code>{html.escape(srv_host)}</code>)\n"
+        f"• Expired  : {exp_dt}\n"
+        "────────────────────────────\n"
+        "<b>Tindakan ini permanen.</b> Akun akan dihapus dari bot DAN dicabut dari server. "
+        "Tidak dapat dibatalkan."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 Ya, Hapus Permanen", callback_data=f"del_do:{acc_id}")],
+        [InlineKeyboardButton(text="⬅️ Batal", callback_data="del_acc_menu")]
+    ])
+    await safe_edit_Basic(cb, txt, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(F.data.startswith("del_do:"))
 async def cb_del_my_acc(cb: CallbackQuery):
     acc_id = int(cb.data.split(":")[1])
     now = int(time.time())
@@ -4046,15 +4221,30 @@ async def cb_del_my_acc(cb: CallbackQuery):
         if acc["locked_until"] > now and cb.from_user.id != ADMIN_ID:
             await cb.answer("Akun sedang TERKUNCI dan tidak dapat dihapus sampai masa kunci selesai.", show_alert=True)
             return
-        if acc["protocol"] == "ssh":
-            engine.delete_ssh_user(acc["username"])
-        else:
-            engine.remove_xray_user(acc["protocol"], acc["username"])
+        srv = conn.execute("SELECT * FROM servers WHERE id=?", (acc["server_id"],)).fetchone()
+    await cb.answer("⏳ Menghapus akun...")
+    # Cabut dari server yang benar (lokal ATAU remote — dulu selalu lokal: bug)
+    ok_del = False
+    try:
+        ok_del = await asyncio.to_thread(engine.remove_account_from_server, srv, acc["protocol"], acc["username"])
+    except Exception as e:
+        ok_del = False
+    # Bersihkan rule bandwidth akun
+    try:
+        await asyncio.to_thread(engine.remove_account_bandwidth, srv, acc["username"])
+    except Exception:
+        pass
+    with db_conn() as conn:
         conn.execute("DELETE FROM accounts WHERE id=?", (acc_id,))
         conn.commit()
     log_activity("DELETE_USER", f"{acc['username']} dihapus oleh {cb.from_user.id}")
-    await cb.answer("Akun berhasil dihapus.", show_alert=True)
-    await cb_my_accounts(cb)
+    warn = "" if ok_del else "\n\n⚠️ <i>Akun dihapus dari bot, tapi server tidak merespons — cek manual di server tersebut.</i>"
+    await cb.message.answer(
+        f"✅ <b>Akun Dihapus</b>\n<code>{html.escape(acc['username'])}</code> ({acc['protocol'].upper()}) "
+        f"telah dicabut permanen.{warn}",
+        parse_mode="HTML"
+    )
+    await cb_del_acc_menu(cb)
 
 @router.callback_query(F.data.startswith("create:"))
 async def cb_create_start(cb: CallbackQuery, state: FSMContext):
@@ -4081,11 +4271,45 @@ async def cb_create_start(cb: CallbackQuery, state: FSMContext):
         return
 
     with db_conn() as conn:
-        servers = conn.execute("SELECT * FROM servers").fetchall()
+        servers = conn.execute("SELECT * FROM servers ORDER BY is_local DESC, id ASC").fetchall()
     if len(servers) > 1:
-        kb = [[InlineKeyboardButton(text=f"🖥 {s['name']} ({s['city']})", callback_data=f"pick_srv:{proto}:{is_trial}:{s['id']}")] for s in servers]
+        now_ts = int(time.time())
+        online_map = {}
+        for s in servers:
+            online_map[s["id"]] = (
+                True if s["is_local"] == 1
+                else await asyncio.to_thread(engine.check_server_online, s)
+            )
+        live = [s for s in servers if online_map[s["id"]]]
+        if not live:
+            await cb.answer("⚠️ Semua server sedang tidak dapat dihubungi. Coba beberapa saat lagi.", show_alert=True)
+            return
+        if len(live) == 1:
+            # Cuma satu yang hidup — langsung buat di situ, tak perlu user memilih
+            await proceed_server_selection(cb, state, proto, is_trial, live[0]["id"])
+            return
+        kb = []
+        for s in servers:
+            if not online_map[s["id"]]:
+                kb.append([InlineKeyboardButton(text=f"🔴 {engine.server_label(s)} — Offline", callback_data="noop_proto")])
+                continue
+            cnt = 0
+            try:
+                with db_conn() as conn:
+                    cnt = conn.execute("SELECT COUNT(*) as c FROM accounts WHERE server_id=? AND expired_at > ?", (s["id"], now_ts)).fetchone()["c"]
+            except Exception:
+                pass
+            max_u = s["max_users"] if ("max_users" in s.keys() and s["max_users"]) else get_int_setting("max_users_per_vps", 100, 1)
+            kb.append([InlineKeyboardButton(
+                text=f"🟢 {engine.server_label(s)} — {cnt}/{max_u}",
+                callback_data=f"pick_srv:{proto}:{is_trial}:{s['id']}"
+            )])
         kb.append([InlineKeyboardButton(text="⬅️ Batal", callback_data="back_home")])
-        await safe_edit_Basic(cb, "<b>Pilih Lokasi Server VPS:</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+        await safe_edit_Basic(
+            cb,
+            "<b>Pilih Lokasi Server VPS:</b>\n<i>Hanya server yang online ditampilkan.</i>",
+            parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
+        )
         return
     await proceed_server_selection(cb, state, proto, is_trial, servers[0]["id"])
 
@@ -4098,9 +4322,21 @@ async def proceed_server_selection(cb: CallbackQuery, state: FSMContext, proto: 
     with db_conn() as conn:
         srv = conn.execute("SELECT * FROM servers WHERE id=?", (srv_id,)).fetchone()
         cnt = conn.execute("SELECT COUNT(*) as c FROM accounts WHERE server_id=? AND expired_at > ?", (srv_id, int(time.time()))).fetchone()["c"]
+    if not srv:
+        await cb.answer("Server tidak ditemukan (mungkin baru dihapus admin).", show_alert=True)
+        return
+    # Cek server hidup DULU (lebih informatif daripada "penuh")
+    if srv["is_local"] != 1:
+        alive = await asyncio.to_thread(engine.check_server_online, srv)
+        if not alive:
+            await cb.answer(
+                f"⚠️ {engine.server_label(srv)} tidak dapat dihubungi. Pilih server lain.",
+                show_alert=True
+            )
+            return
     max_u = (srv["max_users"] if srv and "max_users" in srv.keys() and srv["max_users"] else get_int_setting("max_users_per_vps", 100, 1))
-    if cnt >= max_u:
-        await cb.answer(f"Server penuh ({cnt}/{max_u} akun aktif).", show_alert=True)
+    if cnt >= max_u and cb.from_user.id != ADMIN_ID:
+        await cb.answer(f"Server penuh ({cnt}/{max_u} akun aktif). Pilih server lain.", show_alert=True)
         return
 
     if is_trial == 1:
@@ -4169,7 +4405,9 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
         now = int(time.time())
         ip_limit = get_int_setting("default_ip_limit", 2, 1)
         quota_gb = get_int_setting("default_quota_gb", 50, 0)
-        speed_mbps = get_int_setting("default_speed_mbps", 0, 0)
+        # Akun baru mewarisi speed VPS tujuan; fallback ke default global
+        srv_spd = srv["speed_mbps"] if ("speed_mbps" in srv.keys() and srv["speed_mbps"]) else 0
+        speed_mbps = int(srv_spd) if int(srv_spd) > 0 else get_int_setting("default_speed_mbps", 0, 0)
 
         if is_trial:
             t_min = get_int_setting("trial_minutes", 30, 1)
@@ -4182,13 +4420,23 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
             exp_display = datetime.fromtimestamp(exp_ts).strftime("%Y-%m-%d")
             exp_ssh_date = exp_display
 
+        # Buat akun di server tujuan; gagal => JANGAN simpan ke DB (dulu error diabaikan)
         if srv["is_local"] == 1:
             if proto == "ssh":
-                engine.create_ssh_user(uname, secret, exp_ssh_date)
+                created = engine.create_ssh_user(uname, secret, exp_ssh_date)
             else:
-                engine.add_xray_user(proto, uname, secret)
+                created, _msg = engine.add_xray_user(proto, uname, secret)
         else:
-            await asyncio.to_thread(engine.create_remote_account, srv, proto, uname, secret, exp_ssh_date)
+            created = await asyncio.to_thread(engine.create_remote_account, srv, proto, uname, secret, exp_ssh_date)
+        if created is False:
+            raise RuntimeError(f"Server {engine.server_label(srv)} menolak pembuatan akun (useradd/add_xray_user gagal).")
+
+        # Terapkan limit bandwidth per-akun bila ada
+        if speed_mbps and int(speed_mbps) > 0:
+            try:
+                await asyncio.to_thread(engine.apply_account_bandwidth, srv, uname, int(speed_mbps), None)
+            except Exception:
+                pass
 
         with db_conn() as conn:
             try:
@@ -4533,18 +4781,35 @@ async def cb_confirm_del_all(cb: CallbackQuery, state: FSMContext):
     mode = cb.data.split(":")[1]
     with db_conn() as conn:
         rows = conn.execute("SELECT * FROM accounts WHERE is_trial=1" if mode == "trial" else "SELECT * FROM accounts").fetchall()
-        xray_names = set()
-        for r in rows:
-            if r["protocol"] == "ssh": engine.delete_ssh_user(r["username"])
-            else: xray_names.add(r["username"])
+        srvs = {s["id"]: s for s in conn.execute("SELECT * FROM servers").fetchall()}
+    if not rows:
+        await cb.answer("Tidak ada akun untuk dihapus.", show_alert=True)
+        return
+    await cb.answer(f"⏳ Menghapus {len(rows)} akun di semua server...")
+    # Hapus per-akun di server masing-masing (dulu hanya lokal → akun remote nyangkut)
+    failed = []
+    for r in rows:
+        srv = srvs.get(r["server_id"])
+        try:
+            ok = await asyncio.to_thread(engine.remove_account_from_server, srv, r["protocol"], r["username"])
+        except Exception:
+            ok = False
+        if not ok:
+            failed.append(f"{r['username']}@{(srv['name'] if srv else '?')}")
+        try:
+            await asyncio.to_thread(engine.remove_account_bandwidth, srv, r["username"])
+        except Exception:
+            pass
+    with db_conn() as conn:
         if mode == "trial":
-            if xray_names: engine.clear_all_xray_users(only_usernames=xray_names)
             conn.execute("DELETE FROM accounts WHERE is_trial=1")
         else:
-            engine.clear_all_xray_users(only_usernames=None)
             conn.execute("DELETE FROM accounts")
         conn.commit()
-    await cb.answer(f"✅ Berhasil menghapus {len(rows)} akun!", show_alert=True)
+    msg = f"✅ <b>{len(rows) - len(failed)} akun dihapus</b> dari bot & server."
+    if failed:
+        msg += f"\n⚠️ <b>{len(failed)} gagal dicabut dari server</b> (offline?):\n<code>{html.escape(', '.join(failed[:15]))}</code>"
+    await cb.message.answer(msg, parse_mode="HTML")
     await cb_admin_home(cb, state)
 
 
@@ -4808,8 +5073,10 @@ async def cb_uact_handler(cb: CallbackQuery, state: FSMContext):
         with db_conn() as conn:
             rows = conn.execute("SELECT * FROM accounts WHERE user_id=?", (uid,)).fetchall()
             for r in rows:
-                if r["protocol"] == "ssh": engine.delete_ssh_user(r["username"])
-                else: engine.remove_xray_user(r["protocol"], r["username"])
+                try:
+                    await asyncio.to_thread(engine.remove_account_from_server, engine.srv_of(r), r["protocol"], r["username"])
+                except Exception:
+                    pass
             conn.execute("DELETE FROM accounts WHERE user_id=?", (uid,))
             conn.commit()
         await cb.answer(f"✅ {len(rows)} akun dihapus!", show_alert=True)
@@ -5315,7 +5582,10 @@ async def cb_adm_vps(cb: CallbackQuery, state: FSMContext = None):
         await state.clear()
     now = int(time.time())
     with db_conn() as conn:
-        srvs = conn.execute("SELECT * FROM servers").fetchall()
+        srvs = conn.execute("SELECT * FROM servers ORDER BY is_local DESC, id ASC").fetchall()
+    online = {}
+    for s in srvs:
+        online[s["id"]] = True if s["is_local"] == 1 else await asyncio.to_thread(engine.check_server_online, s)
     lines = [
         "🖥 <b>KELOLA CLUSTER MULTI-VPS</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -5326,7 +5596,7 @@ async def cb_adm_vps(cb: CallbackQuery, state: FSMContext = None):
     for s in srvs:
         with db_conn() as conn:
             cnt = conn.execute("SELECT COUNT(*) as c FROM accounts WHERE server_id=? AND expired_at > ?", (s["id"], now)).fetchone()["c"]
-        tp = "🟢 Lokal" if s["is_local"] == 1 else "🌐 Remote"
+        tp = "🟢 Lokal" if s["is_local"] == 1 else ("🟢 Remote Online" if online.get(s["id"]) else "🔴 Remote Offline")
         ip_disp = s["ipv4"] if ("ipv4" in s.keys() and s["ipv4"]) else (PUBLIC_IP if s["is_local"] == 1 else "-")
         max_u = s["max_users"] if s["max_users"] else 100
         bw_gb = s["max_bw_gb"] if "max_bw_gb" in s.keys() and s["max_bw_gb"] else 1000
@@ -5731,12 +6001,16 @@ async def msg_admin_vps_edit_val(msg: Message, state: FSMContext):
     val = int(m.group(0)) if m else 0
     await state.clear()
 
+    srv = None
+    acts = []
+    note = ""
     with db_conn() as conn:
         if field == "speed":
             conn.execute("UPDATE servers SET speed_mbps=? WHERE id=?", (val, srv_id))
             conn.commit()
             srv = conn.execute("SELECT * FROM servers WHERE id=?", (srv_id,)).fetchone()
-            await asyncio.to_thread(engine.apply_server_speed, srv, val)
+            acts = conn.execute("SELECT username, protocol FROM accounts WHERE server_id=? AND expired_at > ?",
+                                (srv_id, int(time.time()))).fetchall()
         elif field == "bw":
             val = max(1, val)
             conn.execute("UPDATE servers SET max_bw_gb=? WHERE id=?", (val, srv_id))
@@ -5750,8 +6024,19 @@ async def msg_admin_vps_edit_val(msg: Message, state: FSMContext):
             if srv_id == 1:
                 set_setting("max_users_per_vps", str(val))
 
+    if field == "speed":
+        # Speed server = default akun baru + terapkan ulang ke akun yang sudah ada
+        applied = 0
+        for a in acts:
+            try:
+                await asyncio.to_thread(engine.apply_account_bandwidth, srv, a["username"], val, None)
+                applied += 1
+            except Exception:
+                pass
+        note = f"\n<i>Limit {val if val > 0 else 'Unlimited'} Mbps diterapkan ke {applied} akun aktif di server ini.</i>"
+
     txt, kb = render_vps_detail_view(srv_id)
-    await msg.answer(f"✅ Pengaturan VPS berhasil diperbarui!\n\n{txt}", parse_mode="HTML", reply_markup=kb)
+    await msg.answer(f"✅ Pengaturan VPS berhasil diperbarui!{note if field == 'speed' else ''}\n\n{txt}", parse_mode="HTML", reply_markup=kb)
 
 @router.callback_query(F.data.startswith("vps_del:"))
 async def cb_vps_del(cb: CallbackQuery, state: FSMContext):
@@ -5763,11 +6048,26 @@ async def cb_vps_del(cb: CallbackQuery, state: FSMContext):
         if not srv or srv["is_local"] == 1:
             await cb.answer("⚠️ Server Utama (Lokal) tidak dapat dihapus!", show_alert=True)
             return
+        accs = conn.execute("SELECT * FROM accounts WHERE server_id=?", (srv_id,)).fetchall()
+    await cb.answer(f"⏳ Mencabut {len(accs)} akun dari {srv['name']} sebelum menghapus...")
+    revoked = failed = 0
+    for a in accs:
+        try:
+            ok = await asyncio.to_thread(engine.remove_account_from_server, srv, a["protocol"], a["username"])
+            await asyncio.to_thread(engine.remove_account_bandwidth, srv, a["username"])
+            revoked += 1 if ok else 0
+            failed += 0 if ok else 1
+        except Exception:
+            failed += 1
+    with db_conn() as conn:
         conn.execute("DELETE FROM servers WHERE id=?", (srv_id,))
         conn.execute("DELETE FROM accounts WHERE server_id=?", (srv_id,))
         conn.commit()
     resequence_servers_db()
-    await cb.answer(f"🗑 VPS {srv['name']} berhasil dihapus permanen dari database & nomor urut dirapikan!", show_alert=True)
+    msg = f"🗑 VPS <b>{html.escape(srv['name'])}</b> dihapus dari database. {revoked}/{len(accs)} akun tercabut dari server."
+    if failed:
+        msg += f"\n⚠️ {failed} akun gagal dicabut (server offline) — sisa user di VPS itu perlu dibersihkan manual."
+    await cb.message.answer(msg, parse_mode="HTML")
     await cb_adm_vps(cb, state)
 
 # ==============================================================================
@@ -6733,9 +7033,9 @@ async def cb_move_srv_menu(cb: CallbackQuery):
             cnt = conn.execute("SELECT COUNT(*) as c FROM accounts WHERE server_id=? AND expired_at > ?", (s["id"], now)).fetchone()["c"]
         max_u = s["max_users"] if "max_users" in s.keys() and s["max_users"] else default_max_u
         if s["id"] == acc["server_id"]:
-            kb_rows.append([InlineKeyboardButton(text=f"✅ {s['name']} ({s['city']}) — [{cnt}/{max_u}] (Saat Ini)", callback_data="noop_proto")])
+            kb_rows.append([InlineKeyboardButton(text=f"✅ {engine.server_label(s)} — [{cnt}/{max_u}] (Saat Ini)", callback_data="noop_proto")])
         else:
-            kb_rows.append([InlineKeyboardButton(text=f"🌐 Pindah ke {s['name']} ({s['city']}) — [{cnt}/{max_u}]", callback_data=f"do_move_srv:{acc_id}:{s['id']}")])
+            kb_rows.append([InlineKeyboardButton(text=f"🌐 Pindah ke {engine.server_label(s)} — [{cnt}/{max_u}]", callback_data=f"do_move_srv:{acc_id}:{s['id']}")])
 
     kb_rows.append([
         InlineKeyboardButton(text="⬅️ Kembali ke Detail Akun", callback_data=f"view_my:{acc_id}"),
@@ -6774,15 +7074,33 @@ async def cb_do_move_srv(cb: CallbackQuery):
         return
 
     await cb.answer(f"⏳ Memindahkan akun ke {new_srv['name']}...")
+
+    # Server tujuan harus hidup sebelum dipindah (dulu langsung gagal tanpa pesan jelas)
+    if new_srv["is_local"] != 1 and not await asyncio.to_thread(engine.check_server_online, new_srv):
+        await cb.answer(f"⚠️ {engine.server_label(new_srv)} tidak dapat dihubungi.", show_alert=True)
+        return
+
     exp_ssh_date = datetime.fromtimestamp(acc["expired_at"]).strftime("%Y-%m-%d")
 
     try:
         await asyncio.to_thread(engine.add_account_to_server, new_srv, acc["protocol"], acc["username"], acc["secret"], exp_ssh_date)
-        if old_srv:
-            await asyncio.to_thread(engine.remove_account_from_server, old_srv, acc["protocol"], acc["username"])
     except Exception as e:
-        await cb.message.answer(f"❌ Gagal memindahkan akun ke {html.escape(new_srv['name'])}: <code>{html.escape(str(e))}</code>", parse_mode="HTML")
+        await cb.message.answer(f"❌ Gagal membuat akun di {html.escape(new_srv['name'])}: <code>{html.escape(str(e))}</code>", parse_mode="HTML")
         return
+    # Akun sudah ada di server baru — cabut dari yang lama (gagal pun tidak fatal)
+    if old_srv:
+        try:
+            await asyncio.to_thread(engine.remove_account_from_server, old_srv, acc["protocol"], acc["username"])
+            await asyncio.to_thread(engine.remove_account_bandwidth, old_srv, acc["username"])
+        except Exception:
+            pass
+    # Terapkan ulang limit bandwidth akun di server baru
+    acc_spd = acc["speed_mbps"] if acc["speed_mbps"] else 0
+    if acc_spd and int(acc_spd) > 0:
+        try:
+            await asyncio.to_thread(engine.apply_account_bandwidth, new_srv, acc["username"], int(acc_spd), None)
+        except Exception:
+            pass
 
     with db_conn() as conn:
         conn.execute("UPDATE accounts SET server_id=? WHERE id=?", (target_sid, acc_id))
