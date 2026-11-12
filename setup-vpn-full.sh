@@ -1025,7 +1025,38 @@ def load_xray_config():
     with open(XRAY_CONFIG, "r") as f:
         return json.load(f)
 
+def ensure_xray_stats(cfg):
+    """Pastikan stats/api Xray ada DAN outbound 'api' di akhir (bukan default).
+    Tanpa ini, kuota per-akun selalu 0 dan traffic nyasar ke outbound api."""
+    changed = False
+    if "stats" not in cfg:
+        cfg["stats"] = {}
+        changed = True
+    if "api" not in cfg:
+        cfg["api"] = {"tag": "api", "services": ["StatsService"]}
+        changed = True
+    if "policy" not in cfg:
+        cfg["policy"] = {"levels": {"0": {"statsUserUplink": True, "statsUserDownlink": True}},
+                         "system": {"statsInboundUplink": True, "statsInboundDownlink": True}}
+        changed = True
+    if not any(i.get("tag") == "api" for i in cfg.get("inbounds", [])):
+        cfg.setdefault("inbounds", []).insert(0, {"tag": "api", "listen": "127.0.0.1", "port": 10085,
+                                                  "protocol": "dokodemo-door", "settings": {"address": "127.0.0.1"}})
+        changed = True
+    rt = cfg.setdefault("routing", {"domainStrategy": "AsIs", "rules": []})
+    rt.setdefault("rules", [])
+    if not any(r.get("outboundTag") == "api" for r in rt["rules"]):
+        rt["rules"].insert(0, {"type": "field", "inboundTag": ["api"], "outboundTag": "api"})
+        changed = True
+    obs = [o for o in cfg.get("outbounds", []) if o.get("tag") != "api"]
+    obs.append({"tag": "api", "protocol": "freedom", "settings": {}})
+    if [o.get("tag") for o in cfg.get("outbounds", [])] != [o.get("tag") for o in obs]:
+        cfg["outbounds"] = obs
+        changed = True
+    return cfg, changed
+
 def save_and_reload_xray(cfg):
+    cfg, _ = ensure_xray_stats(cfg)
     backup_path = XRAY_CONFIG + ".bak"
     shutil.copyfile(XRAY_CONFIG, backup_path)
     with open(XRAY_CONFIG, "w") as f:
@@ -2935,6 +2966,61 @@ def _lookup_db_secret(username: str) -> str:
 
 
 
+def account_usage_bytes(username: str, proto: str, srv_row=None) -> int:
+    """Pemakaian kuota NYATA per akun. Xray stats utk V2Ray, byte SSH dari log sesi.
+    Return 0 hanya bila memang belum ada trafik (bukan angka karangan)."""
+    total = 0
+    if proto in ("vmess", "vless", "trojan"):
+        cmd = ("/usr/local/bin/xray api statsquery --server=127.0.0.1:10085 "
+               f"-pattern 'user>>>{username}>>>traffic>>>' 2>/dev/null")
+        try:
+            if srv_row is not None and srv_row["is_local"] != 1:
+                ssh = connect_remote_ssh(srv_row, timeout=10)
+                try:
+                    out = _ssh_run(ssh, cmd)
+                finally:
+                    try:
+                        ssh.close()
+                    except Exception:
+                        pass
+            else:
+                out = run_cmd(cmd).stdout or ""
+            for m in re.finditer(r'"value":\s*"?([0-9]+)"?', out or ""):
+                total += int(m.group(1))
+        except Exception:
+            pass
+        if total:
+            return total
+    # fallback: hitung byte dari map log (port yang dipakai akun ini)
+    try:
+        with _eng_db() as conn:
+            row = conn.execute("SELECT last_ips FROM accounts WHERE username=?", (username,)).fetchone()
+        ips = set()
+        if row and row["last_ips"]:
+            ips = {x.strip() for x in str(row["last_ips"]).replace(",", " ").split() if x.strip()}
+        if not ips:
+            return total
+        log = "/var/log/vpn-ws-map.log"
+        if srv_row is not None and srv_row["is_local"] != 1:
+            return total
+        ports = set()
+        if os.path.exists(log):
+            with open(log, "r", errors="ignore") as f:
+                for line in f:
+                    parts = line.strip().split("|")
+                    if len(parts) >= 3 and parts[2] in ips:
+                        ports.add(parts[1])
+        try:
+            with open("/var/log/vpn-port-bw.json") as f:
+                bw = json.load(f)
+            for p in ports:
+                total += int(bw.get(p, 0) or 0)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return total
+
 def delete_ssh_user(username: str):
     safe_username(username)
     kill_active_ssh_pids(username)
@@ -3987,7 +4073,6 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
             kb_rows.append([
                 InlineKeyboardButton(text="🌐 Pindah Server", callback_data=f"move_srv_menu:{acc_id}")
             ])
-        kb_rows.append([InlineKeyboardButton(text=f"🗑 Hapus Akun ({uname})", callback_data=f"del_req:{acc_id}")])
 
     kb_rows.append([
         InlineKeyboardButton(text="👤 Akun Saya", callback_data="my_accounts"),
@@ -4321,6 +4406,9 @@ def main_menu_kb(user_id: int):
         [
             InlineKeyboardButton(text="👤 Akun Saya", callback_data="my_accounts"),
             InlineKeyboardButton(text="📊 Status Server", callback_data="server_info")
+        ],
+        [
+            InlineKeyboardButton(text="🗑 Hapus Akun", callback_data="del_acc_menu")
         ]
     ]
     if user_id == ADMIN_ID:
@@ -4528,8 +4616,7 @@ async def cb_my_accounts(cb: CallbackQuery):
             f"  Status : {status_lbl}\n"
             f"  Limit  : {'Unlimited' if r['ip_limit'] == 0 else str(r['ip_limit']) + ' IP'} | Exp: {exp_dt}"
         )
-    if rows and (cb.from_user.id == ADMIN_ID or True):
-        kb.append([InlineKeyboardButton(text="🗑 Kelola & Hapus Akun", callback_data="del_acc_menu")])
+    kb.append([InlineKeyboardButton(text="🛠️ Kelola Akun Mandiri", callback_data="mandiri_pick")])
     kb.append([InlineKeyboardButton(text="⬅️ Kembali ke Menu Utama", callback_data="back_home")])
     await safe_edit_Basic(cb, "\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
@@ -4572,8 +4659,189 @@ async def cb_copy_fallback(cb: CallbackQuery):
 
 # ==============================================================================
 # HAPUS AKUN — DIPISAH DARI MENU "AKUN SAYA"
-# Alur: Akun Saya (hanya lihat) -> 🗑 Kelola & Hapus Akun -> pilih akun -> konfirmasi
+# Alur: Menu Utama -> 🗑 Hapus Akun -> pilih akun -> konfirmasi (di luar menu Akun Saya)
 # ==============================================================================
+MANDIRI_TXT = (
+    "🛠️ <b>KELOLA AKUN MANDIRI (TANPA POTONG KUOTA)</b>\n"
+    "────────────────────────────\n"
+    "├ Username: <code>{uname}</code>\n"
+    "├ Protokol: <b>{proto}</b>\n"
+    "├ Server Saat Ini: {srv_name} (<code>{domain}</code>)\n"
+    "├ Status Sesi: {sess}\n"
+    "├ Pemakaian Kuota: {used} / {quota}\n"
+    "└ Expired: {exp}\n\n"
+    "Pilihan Fitur Mandiri:\n"
+    "• <b>Reset Sesi</b>: Putus IP yang nyangkut saat berpindah jaringan.\n"
+    "• <b>Ganti UUID/Pass</b>: Ganti kredensial akun jika bocor.\n"
+    "• <b>Tukar Protokol</b>: Ubah VLESS ↔ VMess &amp; Trojan.\n"
+    "• <b>Pindah Server</b>: Pindah ke server lain (masa aktif &amp; kuota tetap)."
+)
+
+def mandiri_acc(cb):
+    """Ambil akun dari callback + cek kepemilikan. Return row atau None."""
+    with db_conn() as conn:
+        acc = conn.execute("SELECT * FROM accounts WHERE id=?", (int(cb.data.split(":")[1]),)).fetchone()
+    if not acc or (cb.from_user.id != ADMIN_ID and acc["user_id"] != cb.from_user.id):
+        return None
+    return acc
+
+def build_mandiri_text(acc, srv):
+    now = int(time.time())
+    active_n = int(acc["active_sessions"] or 0)
+    lim = int(acc["ip_limit"] or 0)
+    lim_lbl = "Unlimited" if lim == 0 else f"{lim} IP"
+    if int(acc["locked_until"] or 0) > now:
+        sess = f"🔴 TERKUNCI sampai {datetime.fromtimestamp(acc['locked_until']).strftime('%H:%M WIB')}"
+    elif active_n > 0:
+        sess = f"🟢 Online ({active_n}/{lim_lbl})"
+    else:
+        sess = f"⚪ Offline (0/{lim_lbl})"
+    try:
+        used_b = int(engine.account_usage_bytes(acc["username"], acc["protocol"], srv) or 0)
+    except Exception:
+        used_b = 0
+    if used_b >= 1024**3:
+        used = f"{used_b / (1024**3):.2f} GB"
+    elif used_b >= 1024**2:
+        used = f"{used_b / (1024**2):.1f} MB"
+    elif used_b >= 1024:
+        used = f"{used_b / 1024:.1f} KB"
+    else:
+        used = f"{used_b} B"
+    qg = int(acc["quota_gb"] or 0)
+    quota = f"{qg} GB" if qg > 0 else "♾ Unlimited"
+    exp = ("Unlimited" if acc["expired_at"] >= 4000000000
+           else datetime.fromtimestamp(acc["expired_at"]).strftime("%Y-%m-%d %H:%M:%S"))
+    return MANDIRI_TXT.format(
+        uname=html.escape(acc["username"]), proto=acc["protocol"].upper(),
+        srv_name=html.escape((srv["name"] if srv else "") or "-"),
+        domain=html.escape(srv["host"] if srv else "-"),
+        sess=sess, used=used, quota=quota, exp=exp)
+
+def mandiri_kb(acc):
+    aid = acc["id"]
+    proto = acc["protocol"]
+    rows = [
+        [InlineKeyboardButton(text="♻️ Reset Sesi / IP", callback_data=f"mnd_reset:{aid}"),
+         InlineKeyboardButton(text="🔑 Ganti UUID / Pass", callback_data=f"mnd_secret:{aid}")],
+    ]
+    if proto in ("vmess", "vless", "trojan"):
+        rows.append([InlineKeyboardButton(text="🔄 Tukar Protokol", callback_data=f"chg_proto_menu:{aid}"),
+                     InlineKeyboardButton(text="🌐 Pindah Server", callback_data=f"move_srv_menu:{aid}")])
+    else:
+        rows.append([InlineKeyboardButton(text="🌐 Pindah Server", callback_data=f"move_srv_menu:{aid}")])
+    rows.append([InlineKeyboardButton(text="📄 Lihat Config", callback_data=f"view_my:{aid}"),
+                 InlineKeyboardButton(text="🎯 Inject Bug / Clash", callback_data=f"inj_menu:{aid}")])
+    if proto in ("vmess", "vless", "trojan"):
+        rows.append([InlineKeyboardButton(text="🔗 Smart Subscription", callback_data=f"inj_extra:{aid}:sub")])
+    rows.append([InlineKeyboardButton(text="⬅️ Kembali ke Akun Saya", callback_data="my_accounts")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+@router.callback_query(F.data == "mandiri_pick")
+async def cb_mandiri_pick(cb: CallbackQuery):
+    now = int(time.time())
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT a.*, s.name AS srv_name FROM accounts a LEFT JOIN servers s ON a.server_id=s.id "
+            "WHERE a.user_id=? AND a.expired_at>? ORDER BY a.id DESC",
+            (cb.from_user.id, now)).fetchall()
+    if not rows:
+        await cb.answer("Tidak ada akun aktif.", show_alert=True)
+        return
+    if len(rows) == 1:
+        acc = rows[0]
+        await safe_edit_Basic(cb, build_mandiri_text(acc, conn_srv(acc)), reply_markup=mandiri_kb(acc))
+        await cb.answer()
+        return
+    kb = [[InlineKeyboardButton(text=f"🛠️ {r['username']} ({r['protocol'].upper()})",
+                                callback_data=f"mandiri:{r['id']}")] for r in rows]
+    kb.append([InlineKeyboardButton(text="⬅️ Kembali", callback_data="my_accounts")])
+    await safe_edit_Basic(cb, "<b>PILIH AKUN UNTUK DIKELOLA</b>\n────────────────────────────\n"
+                              "Pilih akun yang ingin diatur mandiri:",
+                          reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await cb.answer()
+
+def conn_srv(acc):
+    with db_conn() as conn:
+        return conn.execute("SELECT * FROM servers WHERE id=?", (acc["server_id"],)).fetchone() \
+               or conn.execute("SELECT * FROM servers ORDER BY is_local DESC, id ASC LIMIT 1").fetchone()
+
+@router.callback_query(F.data.startswith("mandiri:"))
+async def cb_mandiri(cb: CallbackQuery):
+    acc = mandiri_acc(cb)
+    if not acc:
+        await cb.answer("Akun tidak ditemukan.", show_alert=True)
+        return
+    await safe_edit_Basic(cb, build_mandiri_text(acc, conn_srv(acc)), reply_markup=mandiri_kb(acc))
+    await cb.answer()
+
+@router.callback_query(F.data.startswith("mnd_reset:"))
+async def cb_mnd_reset(cb: CallbackQuery):
+    acc = mandiri_acc(cb)
+    if not acc:
+        await cb.answer("Akun tidak ditemukan.", show_alert=True)
+        return
+    srv = conn_srv(acc)
+    uname = acc["username"]
+    ok = True
+    if acc["protocol"] == "ssh":
+        try:
+            await asyncio.to_thread(engine.kill_ssh_sessions, uname)
+        except Exception:
+            ok = False
+    else:
+        try:
+            if srv and srv["is_local"] == 1:
+                await asyncio.to_thread(engine.kill_active_ssh_pids, uname)
+            else:
+                await asyncio.to_thread(engine.remove_account_from_server, srv, acc["protocol"], uname)
+                await asyncio.to_thread(engine.add_account_to_server, srv, acc["protocol"], uname, acc["secret"], "2099-12-31")
+        except Exception:
+            ok = False
+    with db_conn() as conn:
+        conn.execute("UPDATE accounts SET active_sessions=0, locked_until=0, last_ips='' WHERE id=?", (acc["id"],))
+    await cb.answer("✅ Sesi direset — IP lama terputus." if ok else "⚠️ Reset selesai sebagian.", show_alert=True)
+    with db_conn() as conn:
+        acc = conn.execute("SELECT * FROM accounts WHERE id=?", (acc["id"],)).fetchone()
+    await safe_edit_Basic(cb, build_mandiri_text(acc, srv), reply_markup=mandiri_kb(acc))
+
+@router.callback_query(F.data.startswith("mnd_secret:"))
+async def cb_mnd_secret(cb: CallbackQuery):
+    acc = mandiri_acc(cb)
+    if not acc:
+        await cb.answer("Akun tidak ditemukan.", show_alert=True)
+        return
+    srv = conn_srv(acc)
+    uname, proto, old = acc["username"], acc["protocol"], acc["secret"]
+    new = (uuid.uuid4().hex if proto != "ssh" else "".join(random.choices(
+        "abcdefghjkmnpqrstuvwxyzACDEFGHJKLMNPQRSTUVWXYZ23456789", k=12)))
+    ok = True
+    try:
+        if proto == "ssh":
+            await asyncio.to_thread(engine.sync_ssh_password_local, uname, new)
+        else:
+            if srv and srv["is_local"] == 1:
+                await asyncio.to_thread(engine.remove_xray_user, proto, uname)
+                await asyncio.to_thread(engine.add_xray_user, proto, uname, new)
+            else:
+                await asyncio.to_thread(engine.remove_account_from_server, srv, proto, uname)
+                await asyncio.to_thread(engine.add_account_to_server, srv, proto, uname, new, "2099-12-31")
+    except Exception:
+        ok = False
+        new = old
+    if ok:
+        with db_conn() as conn:
+            conn.execute("UPDATE accounts SET secret=? WHERE id=?", (new, acc["id"]))
+        set_setting(f"sub_upd_{acc['id']}", datetime.now().strftime("%Y-%m-%d %H:%M:%S WIB"))
+    await cb.answer("✅ Kredensial baru dibuat." if ok else "⚠️ Gagal ganti kredensial.",
+                    show_alert=True)
+    with db_conn() as conn:
+        acc = conn.execute("SELECT * FROM accounts WHERE id=?", (acc["id"],)).fetchone()
+    txt = build_mandiri_text(acc, srv)
+    if ok:
+        txt += f"\n\n🔑 <b>KREDENSIAL BARU:</b>\n<pre><code>{html.escape(new)}</code></pre>\n<i>Perbarui config di aplikasi kamu.</i>"
+    await safe_edit_Basic(cb, txt, reply_markup=mandiri_kb(acc))
+
 @router.callback_query(F.data == "del_acc_menu")
 async def cb_del_acc_menu(cb: CallbackQuery):
     allowed, reason = check_user_access(cb.from_user.id)
@@ -9297,7 +9565,11 @@ touch /var/log/xray/access.log /var/log/xray/error.log && chmod 666 /var/log/xra
 cat << 'EOXRAY' > /etc/xray/config.json
 {
   "log": { "access": "/var/log/xray/access.log", "error": "/var/log/xray/error.log", "loglevel": "info" },
+  "stats": {},
+  "api": { "tag": "api", "services": [ "StatsService" ] },
+  "policy": { "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } }, "system": { "statsInboundUplink": true, "statsInboundDownlink": true } },
   "inbounds": [
+    { "tag": "api", "listen": "127.0.0.1", "port": 10085, "protocol": "dokodemo-door", "settings": { "address": "127.0.0.1" } },
     { "tag": "vmess-ws", "listen": "127.0.0.1", "port": 10001, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/vmess" } } },
     { "tag": "vmess-grpc", "listen": "127.0.0.1", "port": 10002, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "vmess" } } },
     { "tag": "vmess-up", "listen": "127.0.0.1", "port": 10003, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "httpupgrade", "httpupgradeSettings": { "path": "/upvmess" } } },
@@ -9312,9 +9584,10 @@ cat << 'EOXRAY' > /etc/xray/config.json
   ],
   "outbounds": [
     { "tag": "direct", "protocol": "freedom", "settings": {} },
-    { "tag": "blocked", "protocol": "blackhole", "settings": {} }
+    { "tag": "blocked", "protocol": "blackhole", "settings": {} },
+    { "tag": "api", "protocol": "freedom", "settings": {} }
   ],
-  "routing": { "domainStrategy": "AsIs", "rules": [ { "type": "field", "protocol": ["bittorrent"], "outboundTag": "blocked" } ] }
+  "routing": { "domainStrategy": "AsIs", "rules": [ { "type": "field", "inboundTag": ["api"], "outboundTag": "api" }, { "type": "field", "protocol": ["bittorrent"], "outboundTag": "blocked" } ] }
 }
 EOXRAY
 
@@ -10246,7 +10519,11 @@ touch /var/log/xray/access.log /var/log/xray/error.log && chmod 666 /var/log/xra
 cat << 'EOXRAY' > /etc/xray/config.json
 {
   "log": { "access": "/var/log/xray/access.log", "error": "/var/log/xray/error.log", "loglevel": "info" },
+  "stats": {},
+  "api": { "tag": "api", "services": [ "StatsService" ] },
+  "policy": { "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } }, "system": { "statsInboundUplink": true, "statsInboundDownlink": true } },
   "inbounds": [
+    { "tag": "api", "listen": "127.0.0.1", "port": 10085, "protocol": "dokodemo-door", "settings": { "address": "127.0.0.1" } },
     { "tag": "vmess-ws", "listen": "127.0.0.1", "port": 10001, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/vmess" } } },
     { "tag": "vmess-grpc", "listen": "127.0.0.1", "port": 10002, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "vmess" } } },
     { "tag": "vmess-up", "listen": "127.0.0.1", "port": 10003, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "httpupgrade", "httpupgradeSettings": { "path": "/upvmess" } } },
@@ -10261,9 +10538,10 @@ cat << 'EOXRAY' > /etc/xray/config.json
   ],
   "outbounds": [
     { "tag": "direct", "protocol": "freedom", "settings": {} },
-    { "tag": "blocked", "protocol": "blackhole", "settings": {} }
+    { "tag": "blocked", "protocol": "blackhole", "settings": {} },
+    { "tag": "api", "protocol": "freedom", "settings": {} }
   ],
-  "routing": { "domainStrategy": "AsIs", "rules": [ { "type": "field", "protocol": ["bittorrent"], "outboundTag": "blocked" } ] }
+  "routing": { "domainStrategy": "AsIs", "rules": [ { "type": "field", "inboundTag": ["api"], "outboundTag": "api" }, { "type": "field", "protocol": ["bittorrent"], "outboundTag": "blocked" } ] }
 }
 EOXRAY
 
