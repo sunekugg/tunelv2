@@ -6,9 +6,10 @@
 # ==============================================================================
 set -e
 export DEBIAN_FRONTEND=noninteractive
+export TERM="${TERM:-xterm}"
 mkdir -p /etc/vpn-bot /var/log/vpn-bot /etc/xray /var/log/xray /etc/xray/certs /etc/dropbear /var/www/html
 
-clear
+clear 2>/dev/null || true
 echo "========================================================================"
 echo "      INSTALASI PORTABLE SERVER VPN & BOT TELEGRAM (SEKALI PASANG)      "
 echo "========================================================================"
@@ -188,7 +189,7 @@ echo "[2/6] Menginstal paket sistem & dependensi..."
 apt-get -o Acquire::ForceIPv4=true update -y -o DPkg::Lock::Timeout=120
 apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o DPkg::Lock::Timeout=120 \
     curl wget jq git unzip tar socat cron net-tools lsof psmisc \
-    iptables iptables-persistent netfilter-persistent fail2ban certbot \
+    iptables iptables-persistent ipset netfilter-persistent fail2ban certbot \
     nginx openssh-server dropbear squid openvpn easy-rsa \
     build-essential zlib1g-dev bzip2 python3 python3-pip python3-venv \
     sqlite3 bc vnstat wondershaper logrotate qrencode openssl >/dev/null 2>&1 || true
@@ -1607,9 +1608,28 @@ def _bw_apply_cmds(uname: str, kbps: int, ips: list) -> str:
         f"iptables -t mangle -A INPUT -m set --match-set {iset} src -j {chain}; true"
     )
 
+def bw_available(srv_row=None) -> bool:
+    """ipset + modul xt_set wajib ada; tanpa itu limit per-akun mustahil."""
+    import shutil
+    if srv_row is None or srv_row["is_local"] == 1:
+        return bool(shutil.which("ipset"))
+    try:
+        ssh = connect_remote_ssh(srv_row, timeout=8)
+    except Exception:
+        return False
+    try:
+        out = _ssh_run(ssh, "command -v ipset >/dev/null 2>&1 && echo YES || echo NO")
+        return out.strip() == "YES"
+    finally:
+        try:
+            ssh.close()
+        except Exception:
+            pass
+
 def apply_account_bandwidth(srv_row, uname: str, mbps: int, ips=None):
     """Terapkan / cabut limit bandwidth per-akun. mbps=0 -> unlimited (rule dibersihkan).
-    ips: daftar IP klien akun (kalau None, ambil dari accounts.last_ips)."""
+    ips: daftar IP klien akun (kalau None, ambil dari accounts.last_ips).
+    Return (ok, pesan). Tidak pernah lapor sukses palsu."""
     if not srv_row:
         return False, "Server tidak diketahui."
     kbps = int(mbps) * 1000 if mbps and int(mbps) > 0 else 0
@@ -1622,14 +1642,27 @@ def apply_account_bandwidth(srv_row, uname: str, mbps: int, ips=None):
             ips = []
     cmd = _bw_apply_cmds(uname, kbps, ips)
     if srv_row["is_local"] == 1:
-        run_cmd(cmd)
+        if kbps > 0 and not bw_available(srv_row):
+            return False, "ipset tidak terpasang (apt-get install -y ipset) — limit per-akun tidak bisa dipasang."
+        res = run_cmd(cmd)
+        if kbps > 0:
+            chk = run_cmd("iptables -t mangle -S OUTPUT 2>/dev/null")
+            if _bw_chain_name(uname) not in (chk.stdout or ""):
+                err = (res.stderr or "").strip().splitlines()
+                return False, f"Rule gagal dipasang: {err[-1] if err else 'iptables menolak'}"
         return True, "OK"
     try:
         ssh = connect_remote_ssh(srv_row, timeout=10)
     except Exception as e:
         return False, f"SSH gagal: {e}"
     try:
+        if kbps > 0 and _ssh_run(ssh, "command -v ipset >/dev/null 2>&1 && echo YES || echo NO").strip() != "YES":
+            return False, "ipset belum terpasang di VPS remote — limit per-akun tidak bisa dipasang."
         _ssh_run(ssh, cmd)
+        if kbps > 0:
+            chk = _ssh_run(ssh, "iptables -t mangle -S OUTPUT 2>/dev/null")
+            if _bw_chain_name(uname) not in chk:
+                return False, "Rule gagal dipasang di VPS remote (iptables menolak)."
         return True, "OK"
     finally:
         try:
@@ -1686,7 +1719,7 @@ def provision_remote_vps(srv_row):
         install_cmd = (
             "nohup bash -c '"
             "export DEBIAN_FRONTEND=noninteractive; "
-            "apt-get -o Acquire::ForceIPv4=true update -y && apt-get -o Acquire::ForceIPv4=true install -y curl wget jq unzip nginx libnginx-mod-stream openssh-server dropbear python3 wondershaper vnstat >/dev/null 2>&1; "
+            "apt-get -o Acquire::ForceIPv4=true update -y && apt-get -o Acquire::ForceIPv4=true install -y curl wget jq unzip ipset nginx libnginx-mod-stream openssh-server dropbear python3 wondershaper vnstat >/dev/null 2>&1; "
             "sed -i \"/^Banner /d\" /etc/ssh/sshd_config; echo \"Banner /etc/issue.net\" >> /etc/ssh/sshd_config; "
             "systemctl restart ssh || systemctl restart sshd; "
             "chmod +x /etc/vpn-bot/*.py 2>/dev/null; "
@@ -4498,11 +4531,15 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
             raise RuntimeError(f"Server {engine.server_label(srv)} menolak pembuatan akun (useradd/add_xray_user gagal).")
 
         # Terapkan limit bandwidth per-akun bila ada
+        bw_note = ""
         if speed_mbps and int(speed_mbps) > 0:
             try:
-                await asyncio.to_thread(engine.apply_account_bandwidth, srv, uname, int(speed_mbps), None)
-            except Exception:
-                pass
+                bw_ok, bw_msg = await asyncio.to_thread(
+                    engine.apply_account_bandwidth, srv, uname, int(speed_mbps), None)
+                if not bw_ok:
+                    bw_note = f"\n\n⚠️ <i>Limit {int(speed_mbps)} Mbps tidak terpasang: {html.escape(bw_msg)}</i>"
+            except Exception as e:
+                bw_note = f"\n\n⚠️ <i>Limit speed gagal: {html.escape(str(e))}</i>"
 
         with db_conn() as conn:
             try:
@@ -4535,7 +4572,7 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
 
         log_activity("CREATE_ACCOUNT", f"{proto.upper()} {uname} ({'Trial' if is_trial else 'Reguler'}) dibuat oleh {user_id}")
         out_html, kb = build_account_details_and_kb(acc_row, srv, back_target="back_home")
-        text_msg = f"{out_html}\n<i>Ketuk teks link atau tombol di bawah untuk menyalin cepat:</i>"
+        text_msg = f"{out_html}\n<i>Ketuk teks link atau tombol di bawah untuk menyalin cepat:</i>{bw_note}"
         if edit_mode:
             try:
                 await msg_obj.edit_text(text_msg, parse_mode="HTML", reply_markup=kb)
@@ -6092,14 +6129,18 @@ async def msg_admin_vps_edit_val(msg: Message, state: FSMContext):
 
     if field == "speed":
         # Speed server = default akun baru + terapkan ulang ke akun yang sudah ada
-        applied = 0
+        bw_results = []
         for a in acts:
             try:
-                await asyncio.to_thread(engine.apply_account_bandwidth, srv, a["username"], val, None)
-                applied += 1
-            except Exception:
-                pass
-        note = f"\n<i>Limit {val if val > 0 else 'Unlimited'} Mbps diterapkan ke {applied} akun aktif di server ini.</i>"
+                bw_results.append(await asyncio.to_thread(engine.apply_account_bandwidth, srv, a["username"], val, None))
+            except Exception as e:
+                bw_results.append((False, str(e)))
+        ok_cnt = sum(1 for x in (bw_results or []) if x[0])
+        fail_cnt = len(bw_results or []) - ok_cnt
+        note = f"\n<i>Limit {val if val > 0 else 'Unlimited'} Mbps: {ok_cnt} akun OK"
+        if fail_cnt:
+            note += f", {fail_cnt} GAGAL (cek ipset/iptables)"
+        note += ".</i>"
 
     txt, kb = render_vps_detail_view(srv_id)
     await msg.answer(f"✅ Pengaturan VPS berhasil diperbarui!{note if field == 'speed' else ''}\n\n{txt}", parse_mode="HTML", reply_markup=kb)
@@ -8439,9 +8480,10 @@ def build_portable_installer():
 # ==============================================================================
 set -e
 export DEBIAN_FRONTEND=noninteractive
+export TERM="${TERM:-xterm}"
 mkdir -p /etc/vpn-bot /var/log/vpn-bot /etc/xray /var/log/xray /etc/xray/certs /etc/dropbear /var/www/html
 
-clear
+clear 2>/dev/null || true
 echo "========================================================================"
 echo "      INSTALASI PORTABLE SERVER VPN & BOT TELEGRAM (SEKALI PASANG)      "
 echo "========================================================================"
@@ -8621,7 +8663,7 @@ echo "[2/6] Menginstal paket sistem & dependensi..."
 apt-get -o Acquire::ForceIPv4=true update -y -o DPkg::Lock::Timeout=120
 apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -o DPkg::Lock::Timeout=120 \\
     curl wget jq git unzip tar socat cron net-tools lsof psmisc \\
-    iptables iptables-persistent netfilter-persistent fail2ban certbot \\
+    iptables iptables-persistent ipset netfilter-persistent fail2ban certbot \\
     nginx openssh-server dropbear squid openvpn easy-rsa \\
     build-essential zlib1g-dev bzip2 python3 python3-pip python3-venv \\
     sqlite3 bc vnstat wondershaper logrotate qrencode openssl >/dev/null 2>&1 || true
@@ -9159,7 +9201,7 @@ apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confde
     nginx >/dev/null 2>&1 || true
 
 apt-get -o Acquire::ForceIPv4=true install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    curl wget unzip openssl python3 psmisc lsof socat net-tools vnstat wondershaper >/dev/null 2>&1 || true
+    curl wget unzip openssl python3 psmisc lsof socat net-tools vnstat wondershaper ipset jq >/dev/null 2>&1 || true
 
 ufw disable >/dev/null 2>&1 || true
 iptables -P INPUT ACCEPT 2>/dev/null || true
