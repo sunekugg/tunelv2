@@ -4420,6 +4420,17 @@ def get_theme_key() -> str:
 
 _migrate_old_theme()  # migrasi sekali di awal setelah get_setting tersedia
 
+def _migrate_trial_no_iplimit():
+    """Akun trial lama mungkin terlanjur punya ip_limit>0 — nolkan sekali."""
+    try:
+        with db_conn() as conn:
+            conn.execute("UPDATE accounts SET ip_limit=0 WHERE is_trial=1 AND ip_limit>0")
+            conn.commit()
+    except Exception:
+        pass
+
+_migrate_trial_no_iplimit()
+
 def get_active_theme() -> dict:
     return THEMES_CATALOG[get_theme_key()]
 
@@ -5294,6 +5305,9 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
         user_id = tg_user.id
         now = int(time.time())
         ip_limit = get_int_setting("default_ip_limit", 2, 0)
+        # Akun TRIAL tidak pernah kena limit IP. Limit IP hanya untuk akun reguler.
+        if is_trial:
+            ip_limit = 0
         quota_gb = get_int_setting("default_quota_gb", 50, 0)
         # Akun baru mewarisi speed VPS tujuan; fallback ke default global
         srv_spd = srv["speed_mbps"] if ("speed_mbps" in srv.keys() and srv["speed_mbps"]) else 0
@@ -5738,7 +5752,7 @@ async def sync_unlimited_to_all_accounts(mode_key: str):
         if mode_key == "default_ip_limit":
             new_lim = get_int_setting("default_ip_limit", 0, 0)
             conn.execute(
-                "UPDATE accounts SET ip_limit=?, locked_until=0, strike_count=0, violation_level=0, active_sessions=0 WHERE expired_at > ?",
+                "UPDATE accounts SET ip_limit=?, locked_until=0, strike_count=0, violation_level=0, active_sessions=0 WHERE expired_at > ? AND is_trial=0",
                 (new_lim, now)
             )
             conn.commit()
@@ -5790,7 +5804,8 @@ async def msg_set_cfg(msg: Message, state: FSMContext):
     set_setting(key, val_str)
     if key == "default_ip_limit":
         with db_conn() as conn:
-            conn.execute("UPDATE accounts SET ip_limit=? WHERE expired_at > ?", (int(val_str), int(time.time())))
+            # Trial tidak pernah kena limit IP
+            conn.execute("UPDATE accounts SET ip_limit=? WHERE expired_at > ? AND is_trial=0", (int(val_str), int(time.time())))
             conn.commit()
     elif key == "default_speed_mbps":
         engine.apply_global_speed_limit(int(val_str))
