@@ -378,12 +378,19 @@ XRAY_ROUTES = {
     "/ss-ws": 10010,
 }
 
-def record_port_ip(lport: int, real_ip: str, target_type: str = "ssh"):
+def record_port_ip(lport: int, real_ip: str, target_type: str = "ssh", head: bytes = b""):
     try:
         with open(MAP_LOG, "a") as f:
             f.write(f"{int(time.time())}|{lport}|{real_ip}|{target_type}\n")
     except Exception:
         pass
+    # DEBUG sementara: catat 24 byte pertama untuk mengenali protokol klien asli
+    if head:
+        try:
+            with open("/tmp/ws-bridge-firstbytes.log", "a") as f:
+                f.write(f"{int(time.time())}|{target_type}|{head[:24].hex()}|{head[:24]!r}\n")
+        except Exception:
+            pass
 
 def add_port_bytes(lport: int, nbytes: int):
     global LAST_BW_FLUSH
@@ -814,15 +821,43 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
             lport = sockname[1] if sockname else 0
             if lport:
                 TLS_PREHOP[lport] = real_ip
+                record_port_ip(lport, real_ip, "tls", initial)
+            # DIAGNOSA: simpan ClientHello utuh (SNI/ALPN) + balasan server pertama
+            try:
+                with open("/tmp/tls-capture.log", "a") as _f:
+                    _f.write(f"{int(time.time())}|CH|{len(initial)}|{initial[:4096].hex()}\n")
+            except Exception:
+                pass
             b_writer.write(initial)
             await b_writer.drain()
             try:
+                _first = await asyncio.wait_for(b_reader.read(4096), timeout=30.0)
+                try:
+                    with open("/tmp/tls-capture.log", "a") as _f:
+                        _f.write(f"{int(time.time())}|SRV|{len(_first)}|{_first[:512].hex()}\n")
+                except Exception:
+                    pass
+                if _first:
+                    client_writer.write(_first)
+                    await client_writer.drain()
                 await asyncio.gather(raw_pipe(client_reader, b_writer, lport),
                                      raw_pipe(b_reader, client_writer, lport))
+            except asyncio.TimeoutError:
+                try:
+                    with open("/tmp/tls-capture.log", "a") as _f:
+                        _f.write(f"{int(time.time())}|SRV|TIMEOUT|server tak membalas 30s\n")
+                except Exception:
+                    pass
             finally:
                 TLS_PREHOP.pop(lport, None)
             return
 
+        # Xray mode TCP mentah (tanpa WebSocket): app mengirim handshake biner.
+        #   VMess  : 0x09??  (request command/security + auth)
+        #   VLESS  : 0x00 + 16 byte UUID
+        #   Trojan : 56 hex char (hash password) + CRLF
+        # Tanpa cabang ini, byte biner jatuh ke cabang terakhir dan dibalas
+        # "HTTP/1.1 101" mentah -> app melaporkan timeout.
         if not initial:
             # Klien diam = SSH: server (dropbear) yang bicara dulu. Ini terjadi
             # lewat DNS tunnel, karena klien SSH menunggu banner bukan mengirim.
@@ -831,7 +866,7 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
             lport = sockname[1] if sockname else 0
             if lport:
                 ip_tag = f"{real_ip}:{real_port}" if real_ip == "127.0.0.1" else real_ip
-                record_port_ip(lport, ip_tag, "ssh")
+                record_port_ip(lport, ip_tag, "ssh-silent", initial)
             await asyncio.gather(raw_pipe(client_reader, backend_writer, lport), raw_pipe(backend_reader, client_writer, lport))
             return
 
@@ -848,6 +883,32 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
                 initial = initial[nl_idx + 2:]
                 if not initial:
                     initial = await asyncio.wait_for(client_reader.read(8192), timeout=10.0)
+
+        _raw_tcp_port = None
+        # Trojan: 56 hex char (SHA224 password) + CRLF. Semuanya printable, jadi
+        # harus diperiksa SEBELUM uji "ada byte biner".
+        if (len(initial) >= 58 and initial[56:58] == b"\r\n"
+                and all(c in b"0123456789abcdefABCDEF" for c in initial[:56])):
+            _raw_tcp_port = 10022
+        elif initial[:1] != b"\x16" and any(c < 0x20 or c > 0x7e for c in initial[:16]):
+            # Biner bila ada byte non-printable di 16 byte pertama (HTTP tidak pernah).
+            if initial[:1] == b"\x00" and len(initial) >= 17:
+                _raw_tcp_port = 10021                      # VLESS: 0x00 + UUID
+            else:
+                _raw_tcp_port = 10020                      # VMess AEAD: 16 byte acak
+        if _raw_tcp_port:
+            backend_reader, backend_writer = await asyncio.open_connection("127.0.0.1", _raw_tcp_port)
+            sockname = backend_writer.get_extra_info("sockname")
+            lport = sockname[1] if sockname else 0
+            if lport:
+                ip_tag = f"{real_ip}:{real_port}" if real_ip == "127.0.0.1" else real_ip
+                record_port_ip(lport, ip_tag, f"xray-tcp{_raw_tcp_port}", initial)
+                add_port_bytes(lport, len(initial))
+            backend_writer.write(initial)
+            await backend_writer.drain()
+            await asyncio.gather(raw_pipe(client_reader, backend_writer, lport),
+                                 raw_pipe(backend_reader, client_writer, lport))
+            return
 
         if not initial:
             client_writer.close()
@@ -910,7 +971,7 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
             lport = sockname[1] if sockname else 0
             if lport:
                 ip_tag = f"{real_ip}:{real_port}" if real_ip == "127.0.0.1" else real_ip
-                record_port_ip(lport, ip_tag, "xray")
+                record_port_ip(lport, ip_tag, "xray", initial)
                 add_port_bytes(lport, len(initial))
             backend_writer.write(initial)
             await backend_writer.drain()
@@ -924,6 +985,13 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
             if after_hdr.startswith(b"SSH-"):
                 leftover = after_hdr
 
+        # DEBUG: path tak dikenal -> tercatat agar ketahuan app pakai path apa
+        try:
+            _h = re.search(r"(?im)^host\s*:\s*([^\r\n]+)", headers_text)
+            with open("/tmp/ws-bridge-firstbytes.log", "a") as _f:
+                _f.write(f"{int(time.time())}|UNKNOWNPATH|path={clean_path}|host={( _h.group(1).strip() if _h else '-')}|{initial[:16].hex()}\n")
+        except Exception:
+            pass
         client_writer.write(
             b"HTTP/1.1 101 Switching Protocols\r\n"
             b"Upgrade: websocket\r\n"
@@ -2600,7 +2668,10 @@ def install_full_remote_vps_sync(srv_row):
                 {"tag": "trojan-grpc", "listen": "127.0.0.1", "port": 10008, "protocol": "trojan", "settings": {"clients": []}, "streamSettings": {"network": "grpc", "grpcSettings": {"serviceName": "trojan"}}},
                 {"tag": "trojan-up", "listen": "127.0.0.1", "port": 10009, "protocol": "trojan", "settings": {"clients": []}, "streamSettings": {"network": "httpupgrade", "httpupgradeSettings": {"path": "/uptrojan"}}},
                 {"tag": "ss-ws", "listen": "127.0.0.1", "port": 10010, "protocol": "shadowsocks", "settings": {"method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp"}, "streamSettings": {"network": "ws", "wsSettings": {"path": "/ss-ws"}}},
-                {"tag": "ss-grpc", "listen": "127.0.0.1", "port": 10011, "protocol": "shadowsocks", "settings": {"method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp"}, "streamSettings": {"network": "grpc", "grpcSettings": {"serviceName": "ss-grpc"}}}
+                {"tag": "ss-grpc", "listen": "127.0.0.1", "port": 10011, "protocol": "shadowsocks", "settings": {"method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp"}, "streamSettings": {"network": "grpc", "grpcSettings": {"serviceName": "ss-grpc"}}},
+                {"tag": "vmess-tcp", "listen": "127.0.0.1", "port": 10020, "protocol": "vmess", "settings": {"clients": []}, "streamSettings": {"network": "tcp"}},
+                {"tag": "vless-tcp", "listen": "127.0.0.1", "port": 10021, "protocol": "vless", "settings": {"clients": [], "decryption": "none"}, "streamSettings": {"network": "tcp"}},
+                {"tag": "trojan-tcp", "listen": "127.0.0.1", "port": 10022, "protocol": "trojan", "settings": {"clients": []}, "streamSettings": {"network": "tcp"}}
             ],
             "outbounds": [
                 {"tag": "direct", "protocol": "freedom", "settings": {}},
@@ -9990,7 +10061,10 @@ cat << 'EOXRAY' > /etc/xray/config.json
     { "tag": "trojan-grpc", "listen": "127.0.0.1", "port": 10008, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "trojan" } } },
     { "tag": "trojan-up", "listen": "127.0.0.1", "port": 10009, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "httpupgrade", "httpupgradeSettings": { "path": "/uptrojan" } } },
     { "tag": "ss-ws", "listen": "127.0.0.1", "port": 10010, "protocol": "shadowsocks", "settings": { "method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp" }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/ss-ws" } } },
-    { "tag": "ss-grpc", "listen": "127.0.0.1", "port": 10011, "protocol": "shadowsocks", "settings": { "method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp" }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "ss-grpc" } } }
+    { "tag": "ss-grpc", "listen": "127.0.0.1", "port": 10011, "protocol": "shadowsocks", "settings": { "method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp" }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "ss-grpc" } } },
+    { "tag": "vmess-tcp", "listen": "127.0.0.1", "port": 10020, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "tcp" } },
+    { "tag": "vless-tcp", "listen": "127.0.0.1", "port": 10021, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "tcp" } },
+    { "tag": "trojan-tcp", "listen": "127.0.0.1", "port": 10022, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "tcp" } }
   ],
   "outbounds": [
     { "tag": "direct", "protocol": "freedom", "settings": {} },
@@ -10973,7 +11047,10 @@ cat << 'EOXRAY' > /etc/xray/config.json
     { "tag": "trojan-grpc", "listen": "127.0.0.1", "port": 10008, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "trojan" } } },
     { "tag": "trojan-up", "listen": "127.0.0.1", "port": 10009, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "httpupgrade", "httpupgradeSettings": { "path": "/uptrojan" } } },
     { "tag": "ss-ws", "listen": "127.0.0.1", "port": 10010, "protocol": "shadowsocks", "settings": { "method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp" }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/ss-ws" } } },
-    { "tag": "ss-grpc", "listen": "127.0.0.1", "port": 10011, "protocol": "shadowsocks", "settings": { "method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp" }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "ss-grpc" } } }
+    { "tag": "ss-grpc", "listen": "127.0.0.1", "port": 10011, "protocol": "shadowsocks", "settings": { "method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp" }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "ss-grpc" } } },
+    { "tag": "vmess-tcp", "listen": "127.0.0.1", "port": 10020, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "tcp" } },
+    { "tag": "vless-tcp", "listen": "127.0.0.1", "port": 10021, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "tcp" } },
+    { "tag": "trojan-tcp", "listen": "127.0.0.1", "port": 10022, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "tcp" } }
   ],
   "outbounds": [
     { "tag": "direct", "protocol": "freedom", "settings": {} },
