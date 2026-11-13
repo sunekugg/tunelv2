@@ -805,6 +805,24 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
         except asyncio.TimeoutError:
             initial = b""
 
+        # Klien kirim TLS ClientHello = dia mengharapkan TLS (mis. app yang
+        # mengisi "server:port" 443). Teruskan ke terminator TLS nginx:10445,
+        # JANGAN dijawab HTTP 101 mentah — itu merusak handshake TLS.
+        if initial[:1] == b"\x16" and len(initial) >= 3 and initial[1:2] == b"\x03":
+            b_reader, b_writer = await asyncio.open_connection("127.0.0.1", 10445)
+            sockname = b_writer.get_extra_info("sockname")
+            lport = sockname[1] if sockname else 0
+            if lport:
+                TLS_PREHOP[lport] = real_ip
+            b_writer.write(initial)
+            await b_writer.drain()
+            try:
+                await asyncio.gather(raw_pipe(client_reader, b_writer, lport),
+                                     raw_pipe(b_reader, client_writer, lport))
+            finally:
+                TLS_PREHOP.pop(lport, None)
+            return
+
         if not initial:
             # Klien diam = SSH: server (dropbear) yang bicara dulu. Ini terjadi
             # lewat DNS tunnel, karena klien SSH menunggu banner bukan mengirim.
