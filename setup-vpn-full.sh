@@ -3771,6 +3771,24 @@ import uuid
 from datetime import datetime, timedelta
 import paramiko
 
+def _migrate_old_theme():
+    """Map old theme names (default/cyberpunk/matrix/etc) to new style-based themes."""
+    cur = get_setting("bot_theme", "")
+    mapping = {
+        "default": "treebox",
+        "cyberpunk": "treebox",
+        "matrix": "treebox",
+        "gaming": "treebox",
+        "royalgold": "minimal",
+        "clean": "classic",
+        "": "treebox",
+    }
+    mapped = mapping.get(cur, "treebox")
+    if cur != mapped:
+        set_setting("bot_theme", mapped)
+        print(f"[theme] migrated '{cur}' -> '{mapped}'")
+
+
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -3920,7 +3938,7 @@ def init_db():
                 conn.execute("INSERT OR IGNORE INTO bug_presets (bug_host) VALUES (?)", (b,))
 
         defaults = {
-            "welcome_text": "", "welcome_photo": "", "login_report_enabled": "0", "login_report_interval_min": "60", "login_topic_id": "0", "login_report_mask": "0", "login_report_show_ip": "1", "prefix_enabled": "1", "account_prefix": "sunek", "bot_theme": "default", "auto_heal_enabled": "1", "notif_server_status": "1",
+            "welcome_text": "", "welcome_photo": "", "login_report_enabled": "0", "login_report_interval_min": "60", "login_topic_id": "0", "login_report_mask": "0", "login_report_show_ip": "1", "prefix_enabled": "1", "account_prefix": "sunek", "bot_theme": "treebox", "auto_heal_enabled": "1", "notif_server_status": "1",
             "bot_status": "1", "lock_enabled": "1", "lock_duration_min": "5",
             "lock_strikes": "1", "lock_tiered": "1", "default_days": "7",
             "trial_minutes": "30", "default_ip_limit": "0", "default_quota_gb": "50",
@@ -4250,6 +4268,63 @@ def build_server_rules_text(user_id: int) -> str:
         "• <b>Larangan Keras:</b> Dilarang Torrent, DDoS, Spamming &amp; Multi-Login!"
     )
 
+def _e(x) -> str:
+    return html.escape(str(x))
+
+def _stat_dict(r) -> dict:
+    return {"online": True, "cpu": r["cpu_pct"], "ram": r["ram_str"], "disk": r["disk_str"],
+            "bw": r["bw_gb_str"], "rin": r["in_mbps"], "rout": r["out_mbps"],
+            "vday": r["vnstat_day"], "vmth": r["vnstat_mth"]}
+
+def cap_bar(used: int, cap: int, width: int = 10) -> str:
+    pct = min(used * 100 // max(cap, 1), 100)
+    filled = round(pct * width / 100)
+    return "▓" * filled + "░" * (width - filled) + f" {pct}%"
+
+def render_server_card(style: str, name: str, host: str, used: int, cap: int, d: dict) -> str:
+    n, hs = _e(name), _e(host)
+    cap_txt = f"{used} / {cap} Akun"
+    if style == "classic":
+        if not d["online"]:
+            return f"Server: {n} (Offline / Cek Login SSH)\nDomain: {hs}\nKapasitas User: {cap_txt}"
+        return (
+            f"Server: {n} (Online)\n"
+            f"Domain: {hs}\n"
+            f"CPU / RAM: {_e(d['cpu'])} | {_e(d['ram'])}\n"
+            f"Disk VPS: {_e(d['disk'])}\n"
+            f"Kapasitas &amp; Kuota User: {cap_txt} | {_e(d['bw'])}\n"
+            f"Traffic IN: {_e(d['rin'])} | OUT: {_e(d['rout'])}\n"
+            f"VnStat Day: {_e(d['vday'])} | Mth: {_e(d['vmth'])}"
+        )
+    if style == "minimal":
+        head = f"🖥 <b>{n}</b> {'🟢 Online' if d['online'] else '🔴 Offline'}\n<code>{hs}</code> · {cap_txt}"
+        if not d["online"]:
+            return head
+        det = (
+            f"CPU {_e(d['cpu'])} | RAM {_e(d['ram'])} | Disk {_e(d['disk'])}\n"
+            f"BW {_e(d['bw'])}\n"
+            f"IN {_e(d['rin'])} · OUT {_e(d['rout'])}\n"
+            f"VnStat {_e(d['vday'])} / {_e(d['vmth'])}"
+        )
+        return f"{head}\n<blockquote expandable>{det}</blockquote>"
+    # treebox (default)
+    if not d["online"]:
+        return (
+            f"🖥 <b>{n} (🔴 Offline / Cek Login SSH)</b>\n"
+            f"├ Domain: <code>{hs}</code>\n"
+            f"╰ Kapasitas: <code>{cap_txt}</code>"
+        )
+    return (
+        f"🖥 <b>{n} (🟢 Online)</b>\n"
+        f"├ Domain: <code>{hs}</code>\n"
+        f"├ CPU / RAM: <code>{_e(d['cpu'])} | {_e(d['ram'])}</code>\n"
+        f"├ Disk VPS: <code>{_e(d['disk'])}</code>\n"
+        f"├ Kapasitas: <code>{cap_bar(used, cap)}</code> ({cap_txt})\n"
+        f"├ Kuota BW: <code>{_e(d['bw'])}</code>\n"
+        f"├ IN / OUT: <code>{_e(d['rin'])} | {_e(d['rout'])}</code>\n"
+        f"╰ VnStat D/M: <code>{_e(d['vday'])} | {_e(d['vmth'])}</code>"
+    )
+
 def build_admin_dashboard_text(user_id: int = None, include_rules: bool = True) -> str:
     now = int(time.time())
     with db_conn() as conn:
@@ -4260,6 +4335,7 @@ def build_admin_dashboard_text(user_id: int = None, include_rules: bool = True) 
 
     default_max_u = get_int_setting("max_users_per_vps", 100, 1)
     st = engine.get_dashboard_stats()
+    style = get_active_theme()["style"]
 
     header = (
         "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -4275,41 +4351,11 @@ def build_admin_dashboard_text(user_id: int = None, include_rules: bool = True) 
             s_accs = conn.execute("SELECT COUNT(*) as c FROM accounts WHERE server_id=? AND expired_at > ?", (s["id"], now)).fetchone()["c"]
         s_max_u = s["max_users"] if "max_users" in s.keys() and s["max_users"] else default_max_u
         if s["is_local"] == 1:
-            srv_blocks.append(
-                f"🖥 <b>{html.escape(s['name'])} (🟢 Online)</b>\n"
-                f"├ Domain: <code>{html.escape(s['host'])}</code>\n"
-                f"├ CPU / RAM: <code>{st['cpu_pct']} | {st['ram_str']}</code>\n"
-                f"├ Disk VPS: <code>{st['disk_str']}</code>\n"
-                f"├ Kapasitas &amp; Kuota User: <code>{s_accs} / {s_max_u} Akun | {st['bw_gb_str']}</code>\n"
-                f"📊 <b>[ TRAFFIC RATE (LIVE) ]</b>\n"
-                f"⬇ IN   : <code>{st['in_mbps']}</code>\n"
-                f"⬆ OUT  : <code>{st['out_mbps']}</code>\n"
-                f"📈 <b>[ VNSTAT BANDWIDTH ]</b>\n"
-                f"🗓 Day  : <code>{st['vnstat_day']}</code>\n"
-                f"📆 Mth  : <code>{st['vnstat_mth']}</code>"
-            )
+            d = _stat_dict(st)
         else:
             rst = engine.get_remote_dashboard_stats(s)
-            if rst.get("online"):
-                srv_blocks.append(
-                    f"🖥 <b>{html.escape(s['name'])} (🟢 Online)</b>\n"
-                    f"├ Domain: <code>{html.escape(s['host'])}</code>\n"
-                    f"├ CPU / RAM: <code>{rst['cpu_pct']} | {rst['ram_str']}</code>\n"
-                    f"├ Disk VPS: <code>{rst['disk_str']}</code>\n"
-                    f"├ Kapasitas &amp; Kuota User: <code>{s_accs} / {s_max_u} Akun | {rst['bw_gb_str']}</code>\n"
-                    f"📊 <b>[ TRAFFIC RATE (LIVE) ]</b>\n"
-                    f"⬇ IN   : <code>{rst['in_mbps']}</code>\n"
-                    f"⬆ OUT  : <code>{rst['out_mbps']}</code>\n"
-                    f"📈 <b>[ VNSTAT BANDWIDTH ]</b>\n"
-                    f"🗓 Day  : <code>{rst['vnstat_day']}</code>\n"
-                    f"📆 Mth  : <code>{rst['vnstat_mth']}</code>"
-                )
-            else:
-                srv_blocks.append(
-                    f"🖥 <b>{html.escape(s['name'])} (🔴 Offline / Cek Login SSH)</b>\n"
-                    f"├ Domain: <code>{html.escape(s['host'])}</code>\n"
-                    f"╰ Kapasitas User: <code>{s_accs} / {s_max_u} Akun</code>"
-                )
+            d = _stat_dict(rst) if rst.get("online") else {"online": False}
+        srv_blocks.append(render_server_card(style, s["name"], s["host"], s_accs, s_max_u, d))
 
     body = header + "\n" + "\n\n".join(srv_blocks)
     if include_rules:
@@ -4319,51 +4365,43 @@ def build_admin_dashboard_text(user_id: int = None, include_rules: bool = True) 
 
 
 THEMES_CATALOG = {
-    "default": {
-        "name": "Clean Minimalist (Default)",
+    "treebox": {
+        "name": "Cyber Tree-Box & Progress Bar",
+        "style": "treebox",
+        "title": "🌳 <b>CYBER TREE-BOX VPN PANEL</b>",
+        "line": "━━━━━━━━━━━━━━━━━━━━━━━━",
+        "bullet": "├",
+        "btn_create": "🌳 Buat",
+        "btn_trial": "🆓 Trial",
+    },
+    "minimal": {
+        "name": "Minimalist Expandable Card",
+        "style": "minimal",
         "title": "<b>VPN TUNNELING PANEL</b>",
         "line": "────────────────────────────",
         "bullet": "•",
-        "btn_create": "🦆 Buat",
+        "btn_create": "✨ Buat",
         "btn_trial": "🆓 Trial",
     },
-    "cyberpunk": {
-        "name": "Cyberpunk Neon ⚡",
-        "title": "⚡ <b>𝗖𝗬𝗕𝗘𝗥𝗣𝗨𝗡𝗞 𝗩𝗣𝗡 𝗡𝗘𝗧𝗪𝗢𝗥𝗞</b> ⚡",
-        "line": "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        "bullet": "⚡",
-        "btn_create": "⚡ Buat",
-        "btn_trial": "🆓 Trial",
-    },
-    "royalgold": {
-        "name": "Royal Gold VVIP 👑",
-        "title": "👑 <b>𝗥𝗢𝗬𝗔𝗟 𝗩𝗩𝗜𝗣 𝗧𝗨𝗡𝗡𝗘𝗟𝗜𝗡𝗚</b> 👑",
-        "line": "════════════════════════════",
-        "bullet": "⚜️",
-        "btn_create": "👑 Buat",
-        "btn_trial": "🆓 Trial",
-    },
-    "matrix": {
-        "name": "Hacker Matrix 💻",
-        "title": "💻 <b>[ ROOT@MATRIX-VPN-NODE ]</b> 💻",
-        "line": "============================",
-        "bullet": "▸",
-        "btn_create": "💻 Buat",
-        "btn_trial": "🆓 Trial",
-    },
-    "gaming": {
-        "name": "Gaming Pro Extreme 🎮",
-        "title": "🎮 <b>𝗚𝗔𝗠𝗜𝗡𝗚 𝗣𝗥𝗢 𝗨𝗟𝗧𝗥𝗔 𝗩𝗣𝗡</b> 🔥",
-        "line": "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
-        "bullet": "🔥",
-        "btn_create": "🎮 Buat",
+    "classic": {
+        "name": "Classic Clean",
+        "style": "classic",
+        "title": "<b>VPN TUNNELING PANEL</b>",
+        "line": "----------------------------",
+        "bullet": "-",
+        "btn_create": "📋 Buat",
         "btn_trial": "🆓 Trial",
     },
 }
 
+def get_theme_key() -> str:
+    t_key = get_setting("bot_theme", "treebox")
+    return t_key if t_key in THEMES_CATALOG else "treebox"
+
+_migrate_old_theme()  # migrasi sekali di awal setelah get_setting tersedia
+
 def get_active_theme() -> dict:
-    t_key = get_setting("bot_theme", "default")
-    return THEMES_CATALOG.get(t_key, THEMES_CATALOG["default"])
+    return THEMES_CATALOG[get_theme_key()]
 
 def get_current_main_domain() -> str:
     with db_conn() as conn:
@@ -8427,28 +8465,31 @@ async def msg_admin_change_domain_input(msg: Message, state: FSMContext):
 async def cb_adm_theme_menu(cb: CallbackQuery):
     if cb.from_user.id != ADMIN_ID:
         return
-    cur_theme = get_setting("bot_theme", "default")
+    cur_theme = get_theme_key()
     th_obj = get_active_theme()
+    sample = {"online": True, "cpu": "12%", "ram": "1.2G/2G", "disk": "9G/20G", "bw": "120GB/1TB",
+              "rin": "1.2 Mbps", "rout": "3.4 Mbps", "vday": "2.1 GB", "vmth": "48.7 GB"}
+    preview = render_server_card(th_obj["style"], "VPS-SAMPLE", "vpn.example.com", 42, 100, sample)
     txt = (
-        "🎨 <b>GANTI TEMA TAMPILAN BOT</b>\n"
+        "🎨 <b>Pengaturan Tema &amp; Gaya Tampilan Bot</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• <b>Tema Aktif Saat Ini:</b> <b>{html.escape(th_obj['name'])}</b>\n\n"
-        "<b>Preview Header Tema:</b>\n"
+        f"• <b>Gaya Aktif:</b> <b>{html.escape(th_obj['name'])}</b>\n\n"
+        "<b>Preview Kartu Server:</b>\n"
+        f"{preview}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{th_obj['title']}\n"
-        f"{th_obj['line']}\n"
         f"{th_obj['bullet']} <b>Tombol Buat:</b> {th_obj['btn_create']} SSH / VMess / VLESS / Trojan\n"
-        f"{th_obj['bullet']} <b>Tombol Trial:</b> {th_obj['btn_trial']} SSH / VMess / VLESS / Trojan\n"
-        f"{th_obj['line']}\n\n"
-        "👇 Pilih salah satu tema di bawah untuk mengganti suasana tampilan bot secara instan:"
+        f"{th_obj['bullet']} <b>Tombol Trial:</b> {th_obj['btn_trial']} SSH / VMess / VLESS / Trojan\n\n"
+        "👇 Pilih gaya tampilan di bawah (berlaku instan):"
     )
-    kb_rows = []
+    kb_rows = [
+        [InlineKeyboardButton(text="📊 Lihat Info Server", callback_data="server_info"),
+         InlineKeyboardButton(text="📜 Lihat /start", callback_data="back_home")],
+    ]
     for k, v in THEMES_CATALOG.items():
         prefix = "✅ " if k == cur_theme else "🎨 "
         kb_rows.append([InlineKeyboardButton(text=f"{prefix}{v['name']}", callback_data=f"set_theme:{k}")])
-    kb_rows.append([
-        InlineKeyboardButton(text="👁 Lihat Menu Utama", callback_data="back_home"),
-        InlineKeyboardButton(text="⬅️ Panel Admin", callback_data="admin_home")
-    ])
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Panel Admin", callback_data="admin_home")])
     await safe_edit_Basic(cb, txt, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
 
 @router.callback_query(F.data.startswith("set_theme:"))
@@ -9345,6 +9386,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 EOF_EMBED_FILE
 chmod +x /etc/vpn-bot/bot.py 2>/dev/null || true
 
