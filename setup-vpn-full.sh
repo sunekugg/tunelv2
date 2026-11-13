@@ -3876,6 +3876,7 @@ def db_conn():
 def init_db():
     with db_conn() as conn:
         conn.executescript("""
+        CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY, role TEXT DEFAULT 'admin', created_at INTEGER);
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
         CREATE TABLE IF NOT EXISTS servers (
             id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, host TEXT, city TEXT, isp TEXT,
@@ -3956,6 +3957,12 @@ def init_db():
                 "INSERT INTO servers (name, host, city, isp, max_users, max_bw_gb, speed_mbps, is_local) VALUES (?, ?, ?, ?, 100, 1000, 0, 1)",
                 ("Server Utama", DEFAULT_DOMAIN, DEFAULT_CITY, DEFAULT_ISP)
             )
+                # multi-admin + audit
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(activity_logs)").fetchall()]
+        if "admin_id" not in cols:
+            conn.execute("ALTER TABLE activity_logs ADD COLUMN admin_id INTEGER DEFAULT 0")
+        conn.execute("INSERT OR IGNORE INTO admins (user_id, role, created_at) VALUES (?, 'owner', ?)",
+                     (ADMIN_ID, int(time.time())))
         conn.commit()
     try:
         os.chmod(DB_PATH, 0o600)
@@ -3989,9 +3996,21 @@ def set_setting(key, value):
         conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
         conn.commit()
 
-def log_activity(event, detail):
+def is_admin(uid: int) -> bool:
+    if uid == ADMIN_ID:
+        return True
+    try:
+        with db_conn() as conn:
+            return conn.execute("SELECT 1 FROM admins WHERE user_id=?", (uid,)).fetchone() is not None
+    except Exception:
+        return uid == ADMIN_ID
+
+def is_owner(uid: int) -> bool:
+    return uid == ADMIN_ID
+
+def log_activity(event, detail, admin_id: int = 0):
     with db_conn() as conn:
-        conn.execute("INSERT INTO activity_logs (ts, event, detail) VALUES (?, ?, ?)", (int(time.time()), event, detail))
+        conn.execute("INSERT INTO activity_logs (ts, event, detail, admin_id) VALUES (?, ?, ?, ?)", (int(time.time()), event, detail, admin_id))
         conn.commit()
 
 def record_group_topic(msg: Message):
@@ -4070,6 +4089,7 @@ def check_user_create_quota(user_id: int, is_trial: int):
             return True, ""
 
 class FormState(StatesGroup):
+    admin_add_admin_input = State()
     create_username = State()
     create_password = State()
     admin_set_value = State()
@@ -4580,7 +4600,7 @@ def main_menu_kb(user_id: int):
             InlineKeyboardButton(text="🗑 Hapus Akun", callback_data="del_acc_menu")
         ]
     ]
-    if user_id == ADMIN_ID:
+    if is_admin(user_id):
         buttons.append([InlineKeyboardButton(text="⚙️ Panel Admin", callback_data="admin_home")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -4616,7 +4636,8 @@ def admin_menu_kb():
             InlineKeyboardButton(text="🔓 Unlock Limit IP", callback_data="adm_unlock_list")
         ],
         [
-            InlineKeyboardButton(text="👥 Kelola User & ID", callback_data="adm_users"),
+            InlineKeyboardButton(text="👥 Kelola Admin", callback_data="adm_admin_list"),
+        InlineKeyboardButton(text="👥 Kelola User & ID", callback_data="adm_users"),
             InlineKeyboardButton(text="🗑 Hapus Semua Akun", callback_data="adm_del_all_menu")
         ],
         [
@@ -4654,7 +4675,7 @@ def admin_menu_kb():
 @router.message(Command("setbuat", "setcreate"))
 async def cmd_set_buat(msg: Message):
     record_group_topic(msg)
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     cid, tid = str(msg.chat.id), str(msg.message_thread_id or 0)
     set_setting("group_chat_id", cid)
@@ -4665,7 +4686,7 @@ async def cmd_set_buat(msg: Message):
 @router.message(Command("setlock", "setmultilogin"))
 async def cmd_set_lock(msg: Message):
     record_group_topic(msg)
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     cid, tid = str(msg.chat.id), str(msg.message_thread_id or 0)
     set_setting("group_chat_id", cid)
@@ -4690,7 +4711,7 @@ async def cmd_get_id(msg: Message):
 
 @router.callback_query(F.data.startswith("bind_grp:"))
 async def cb_bind_grp(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     _, chat_id_str, thread_id_str, mode = cb.data.split(":")
     set_setting("group_chat_id", chat_id_str)
@@ -5399,7 +5420,7 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
 
 @router.callback_query(F.data == "admin_home")
 async def cb_admin_home(cb: CallbackQuery, state: FSMContext = None):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     if state:
         await state.clear()
@@ -5422,7 +5443,7 @@ async def cb_admin_home(cb: CallbackQuery, state: FSMContext = None):
 
 @router.callback_query(F.data == "adm_info_vps")
 async def cb_adm_info_vps(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     txt = build_admin_dashboard_text()
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -5439,7 +5460,7 @@ async def cb_adm_info_vps(cb: CallbackQuery):
 
 @router.callback_query(F.data == "adm_ssl_services")
 async def cb_adm_ssl_services(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     st = engine.get_dashboard_stats()
     txt = (
@@ -5460,7 +5481,7 @@ async def cb_adm_ssl_services(cb: CallbackQuery):
 
 @router.callback_query(F.data == "adm_slowdns_udp")
 async def cb_adm_slowdns_udp(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     def _slowdns_info():
         pub = "-"
@@ -5501,7 +5522,7 @@ async def cb_adm_slowdns_udp(cb: CallbackQuery):
 
 @router.callback_query(F.data == "sd_act:regen")
 async def cb_sd_regen(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     await cb.answer("🔑 Generate key baru...", show_alert=False)
     def _regen():
@@ -5525,7 +5546,7 @@ async def cb_sd_regen(cb: CallbackQuery):
 
 @router.callback_query(F.data.in_({"sd_act:restart_sd", "sd_act:restart_uc", "sd_act:restart_ug", "sd_act:restart_all"}))
 async def cb_sd_restart(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     act = cb.data.split(":")[1]
     def _do():
@@ -5548,7 +5569,7 @@ async def cb_sd_restart(cb: CallbackQuery):
 
 @router.callback_query(F.data == "sd_act:regen_ns")
 async def cb_sd_regenservice(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     def _regen():
         # Regenerate slowdns.service dari DOMAIN terkini di config.env, lalu restart
@@ -5570,7 +5591,7 @@ async def cb_sd_regenservice(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("svc_act:"))
 async def cb_svc_act(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     act = cb.data.split(":")[1]
     if act == "xray": engine.run_cmd("systemctl restart xray")
@@ -5585,7 +5606,7 @@ async def cb_svc_act(cb: CallbackQuery):
 
 @router.callback_query(F.data == "adm_toggle_bot")
 async def cb_adm_toggle_bot(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     new_val = "0" if get_setting("bot_status", "1") == "1" else "1"
     set_setting("bot_status", new_val)
@@ -5594,7 +5615,7 @@ async def cb_adm_toggle_bot(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "adm_online")
 async def cb_adm_online(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     now = int(time.time())
     active_map = engine.scan_active_sessions()
@@ -5635,7 +5656,7 @@ async def cb_adm_online(cb: CallbackQuery):
 
 @router.callback_query(F.data == "adm_del_all_menu")
 async def cb_adm_del_all_menu(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     with db_conn() as conn:
         tot = conn.execute("SELECT COUNT(*) as c FROM accounts").fetchone()["c"]
@@ -5649,7 +5670,7 @@ async def cb_adm_del_all_menu(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("confirm_del_all:"))
 async def cb_confirm_del_all(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     mode = cb.data.split(":")[1]
     with db_conn() as conn:
@@ -5738,7 +5759,7 @@ async def sync_unlimited_to_all_accounts(mode_key: str):
 
 @router.callback_query(F.data.startswith("quick_unl:"))
 async def cb_quick_unlimited(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     key = cb.data.split(":")[1]
     set_setting(key, "0")
@@ -5755,7 +5776,7 @@ async def cb_quick_unlimited(cb: CallbackQuery, state: FSMContext):
 
 
 async def msg_set_cfg(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     data = await state.get_data()
     key = data["cfg_key"]
@@ -5789,7 +5810,7 @@ async def msg_set_cfg(msg: Message, state: FSMContext):
 
 @router.callback_query(F.data == "do_unlock_all")
 async def cb_do_unlock_all(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     now = int(time.time())
     with db_conn() as conn:
@@ -5827,7 +5848,7 @@ async def cb_do_unlock_all(cb: CallbackQuery):
 
 @router.callback_query(F.data == "adm_resync_all_auth")
 async def cb_adm_resync_all_auth(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     now = int(time.time())
     await cb.answer("⏳ Menyinkronkan ulang seluruh akun aktif ke sistem VPS...")
@@ -5846,7 +5867,7 @@ async def cb_adm_resync_all_auth(cb: CallbackQuery):
 
 @router.callback_query(F.data == "adm_users")
 async def cb_adm_users(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     await state.clear()
     with db_conn() as conn:
@@ -5863,7 +5884,7 @@ async def cb_adm_users(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "adm_reset_all_quotas")
 async def cb_adm_reset_all_quotas(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     with db_conn() as conn:
         conn.execute("DELETE FROM create_history")
@@ -5873,7 +5894,7 @@ async def cb_adm_reset_all_quotas(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "adm_find_user")
 async def cb_adm_find_user(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     await state.set_state(FormState.admin_search_user)
     await safe_edit_Basic(cb, "🔍 Masukkan <b>ID Telegram</b> atau <b>Username</b>:", parse_mode="HTML")
@@ -5922,13 +5943,13 @@ def render_user_manage_detail(target_uid: int):
 
 @router.callback_query(F.data.startswith("adm_uview:"))
 async def cb_adm_uview(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID: return
+    if not is_admin(cb.from_user.id): return
     txt, kb = render_user_manage_detail(int(cb.data.split(":")[1]))
     await safe_edit_Basic(cb, txt, parse_mode="HTML", reply_markup=kb)
 
 @router.callback_query(F.data.startswith("uact:"))
 async def cb_uact_handler(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID: return
+    if not is_admin(cb.from_user.id): return
     _, action, uid_str = cb.data.split(":")
     uid = int(uid_str)
     if action == "resetq":
@@ -5975,13 +5996,13 @@ async def msg_adm_set_user_quota(msg: Message, state: FSMContext):
 
 @router.callback_query(F.data == "adm_send_backup")
 async def cb_adm_send_backup(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID: return
+    if not is_admin(cb.from_user.id): return
     await cb.answer("📦 Mengirim Full Script Portable ke chat Anda...", show_alert=True)
     subprocess.Popen(["/etc/vpn-bot/venv/bin/python", "/etc/vpn-bot/send_backup.py", "Request Manual dari Panel Admin"])
 
 @router.callback_query(F.data == "adm_unlock_list")
 async def cb_adm_unlock_list(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID: return
+    if not is_admin(cb.from_user.id): return
     now = int(time.time())
     with db_conn() as conn:
         locked = conn.execute("SELECT * FROM accounts WHERE locked_until > ?", (now,)).fetchall()
@@ -6000,7 +6021,7 @@ async def cb_adm_unlock_list(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("do_unlock:"))
 async def cb_do_unlock(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID: return
+    if not is_admin(cb.from_user.id): return
     target = cb.data.split(":")[1]
     now = int(time.time())
     with db_conn() as conn:
@@ -6016,7 +6037,7 @@ async def cb_do_unlock(cb: CallbackQuery):
 
 @router.callback_query(F.data == "adm_lock_cfg")
 async def cb_adm_lock_cfg(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID: return
+    if not is_admin(cb.from_user.id): return
     en = "ON" if get_setting("lock_enabled") == "1" else "OFF"
     tr = "ON" if get_setting("lock_tiered") == "1" else "OFF"
     txt = (
@@ -6033,7 +6054,7 @@ async def cb_adm_lock_cfg(cb: CallbackQuery):
 
 @router.callback_query(F.data == "adm_limits_cfg")
 async def cb_adm_limits_cfg(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID: return
+    if not is_admin(cb.from_user.id): return
     txt = (
         "<b>DURASI, KUOTA, SPEED & LIMIT BUAT</b>\n────────────────────────────\n"
         f"• Masa Aktif Reguler : <b>{get_int_setting('default_days', 7, 1)} Hari</b>\n"
@@ -6056,7 +6077,7 @@ async def cb_adm_limits_cfg(cb: CallbackQuery):
 
 @router.callback_query(F.data == "adm_group_cfg")
 async def cb_adm_group_cfg(cb: CallbackQuery, state: FSMContext = None):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     if state:
         await state.clear()
@@ -6108,7 +6129,7 @@ async def cb_adm_group_cfg(cb: CallbackQuery, state: FSMContext = None):
 
 @router.callback_query(F.data == "wj_disable")
 async def cb_wj_disable(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     set_setting("force_join_chat", "")
     set_setting("force_join_link", "")
@@ -6117,7 +6138,7 @@ async def cb_wj_disable(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "wj_wizard_start")
 async def cb_wj_wizard_start(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     await state.clear()
     await state.set_state(FormState.admin_wj_step1_target)
@@ -6135,7 +6156,7 @@ async def cb_wj_wizard_start(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.admin_wj_step1_target)
 async def msg_wj_step1_target(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     target = (msg.text or "").strip()
     if not target or target.lower() in ("off", "-", "0", "disable"):
@@ -6195,7 +6216,7 @@ async def finalize_wj_setup(target: str, link_input: str) -> tuple:
 
 @router.callback_query(F.data == "wj_step2_auto")
 async def cb_wj_step2_auto(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     data = await state.get_data()
     target = data.get("wj_target", "")
@@ -6213,7 +6234,7 @@ async def cb_wj_step2_auto(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.admin_wj_step2_link)
 async def msg_wj_step2_link(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     data = await state.get_data()
     target = data.get("wj_target", "")
@@ -6231,7 +6252,7 @@ async def msg_wj_step2_link(msg: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("easy_topic:"))
 async def cb_easy_topic(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID: return
+    if not is_admin(cb.from_user.id): return
     mode = cb.data.split(":")[1]
     await state.update_data(topic_mode=mode)
     await state.set_state(FormState.admin_manual_topic)
@@ -6268,7 +6289,7 @@ async def msg_admin_manual_topic(msg: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("test_topic:"))
 async def cb_test_topic(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID: return
+    if not is_admin(cb.from_user.id): return
     mode = cb.data.split(":")[1]
     grp_id = get_setting("group_chat_id", "").strip()
     if not grp_id:
@@ -6290,7 +6311,7 @@ async def cb_toggle_grp_create(cb: CallbackQuery):
 
 @router.callback_query(F.data == "adm_banner_cfg")
 async def cb_adm_banner_cfg(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID: return
+    if not is_admin(cb.from_user.id): return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Edit Banner HTML (/etc/issue.net)", callback_data="edit_banner_html")],
         [InlineKeyboardButton(text=f"Ubah Preset Bug ({get_setting('bug_host')})", callback_data="set_cfg:bug_host")],
@@ -6448,7 +6469,7 @@ def build_component_check_screen(srv_row, temp_pass: str = None):
 
 @router.callback_query(F.data == "adm_vps")
 async def cb_adm_vps(cb: CallbackQuery, state: FSMContext = None):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     if state:
         await state.clear()
@@ -6493,7 +6514,7 @@ async def cb_adm_vps(cb: CallbackQuery, state: FSMContext = None):
 
 @router.callback_query(F.data.startswith("vps_check:"))
 async def cb_vps_check(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     await state.clear()
     srv_id = int(cb.data.split(":")[1])
@@ -6508,7 +6529,7 @@ async def cb_vps_check(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("vps_use_existing:"))
 async def cb_vps_use_existing(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     srv_id = int(cb.data.split(":")[1])
     with db_conn() as conn:
@@ -6524,7 +6545,7 @@ async def cb_vps_use_existing(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("vps_full_install:"))
 async def cb_vps_full_install(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     srv_id = int(cb.data.split(":")[1])
     with db_conn() as conn:
@@ -6550,7 +6571,7 @@ async def cb_vps_full_install(cb: CallbackQuery):
 # ==============================================================================
 @router.callback_query(F.data.startswith("vps_edit_login:"))
 async def cb_vps_edit_login(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     srv_id = int(cb.data.split(":")[1])
     with db_conn() as conn:
@@ -6596,7 +6617,7 @@ async def cb_vps_keep_name(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.vps_edit_name)
 async def msg_vps_edit_name(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     data = await state.get_data()
     srv_id = data["edit_login_sid"]
@@ -6642,7 +6663,7 @@ async def cb_vps_keep_host(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.vps_edit_host)
 async def msg_vps_edit_host(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     data = await state.get_data()
     srv_id = data["edit_login_sid"]
@@ -6689,7 +6710,7 @@ async def cb_vps_keep_ipv4(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.vps_edit_ipv4)
 async def msg_vps_edit_ipv4(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     data = await state.get_data()
     srv_id = data["edit_login_sid"]
@@ -6731,7 +6752,7 @@ async def cb_vps_keep_port(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.vps_edit_port)
 async def msg_vps_edit_port(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     data = await state.get_data()
     srv_id = data["edit_login_sid"]
@@ -6751,7 +6772,7 @@ async def msg_vps_edit_port(msg: Message, state: FSMContext):
 
 @router.message(FormState.vps_edit_pass)
 async def msg_vps_edit_pass(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     data = await state.get_data()
     srv_id = data["edit_login_sid"]
@@ -6833,7 +6854,7 @@ def render_vps_detail_view(srv_id: int):
 
 @router.callback_query(F.data.startswith("vps_detail:"))
 async def cb_vps_detail(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     await state.clear()
     srv_id = int(cb.data.split(":")[1])
@@ -6845,7 +6866,7 @@ async def cb_vps_detail(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("vps_set:"))
 async def cb_vps_set_param(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     _, srv_id_str, field = cb.data.split(":")
     srv_id = int(srv_id_str)
@@ -6864,7 +6885,7 @@ async def cb_vps_set_param(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.admin_vps_edit_val)
 async def msg_admin_vps_edit_val(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     data = await state.get_data()
     srv_id = data["edit_srv_id"]
@@ -6916,7 +6937,7 @@ async def msg_admin_vps_edit_val(msg: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("vps_del:"))
 async def cb_vps_del(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     srv_id = int(cb.data.split(":")[1])
     with db_conn() as conn:
@@ -6951,7 +6972,7 @@ async def cb_vps_del(cb: CallbackQuery, state: FSMContext):
 # ==============================================================================
 @router.callback_query(F.data == "add_vps_node")
 async def cb_add_vps_node(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     await state.clear()
     await state.set_state(FormState.vps_add_name)
@@ -6966,7 +6987,7 @@ async def cb_add_vps_node(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.vps_add_name)
 async def msg_vps_step_name(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     name = msg.text.strip()
     if not name:
@@ -6986,7 +7007,7 @@ async def msg_vps_step_name(msg: Message, state: FSMContext):
 
 @router.message(FormState.vps_add_host)
 async def msg_vps_step_host(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     host = msg.text.strip().replace("http://", "").replace("https://", "").split("/")[0]
     if not host:
@@ -7006,7 +7027,7 @@ async def msg_vps_step_host(msg: Message, state: FSMContext):
 
 @router.message(FormState.vps_add_ipv4)
 async def msg_vps_step_ipv4(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     ipv4 = msg.text.strip()
     if not ipv4:
@@ -7029,7 +7050,7 @@ async def msg_vps_step_ipv4(msg: Message, state: FSMContext):
 
 @router.callback_query(F.data == "vps_use_port22")
 async def cb_vps_use_port22(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     await state.update_data(vps_port=22)
     await state.set_state(FormState.vps_add_pass)
@@ -7045,7 +7066,7 @@ async def cb_vps_use_port22(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.vps_add_port)
 async def msg_vps_step_port(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     m = re.search(r"\d+", msg.text.strip())
     port = int(m.group(0)) if m else 22
@@ -7063,7 +7084,7 @@ async def msg_vps_step_port(msg: Message, state: FSMContext):
 
 @router.message(FormState.vps_add_pass)
 async def msg_vps_step_pass(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     temp_pass = msg.text.strip()
     data = await state.get_data()
@@ -7125,7 +7146,7 @@ async def cb_adm_logs(cb: CallbackQuery):
 # ==============================================================================
 @router.callback_query(F.data == "adm_welcome_cfg")
 async def cb_adm_welcome_cfg(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     await state.clear()
     has_photo = "✅ Ada Foto/Banner" if get_setting("welcome_photo", "").strip() else "❌ Tanpa Foto (Hanya Teks)"
@@ -7159,7 +7180,7 @@ async def cb_adm_welcome_cfg(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("wel_act:"))
 async def cb_wel_act(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     act = cb.data.split(":")[1]
     if act == "del_photo":
@@ -7197,7 +7218,7 @@ async def cb_wel_act(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.admin_edit_welcome_text)
 async def msg_admin_welcome_text(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     new_text = msg.html_text if msg.html_text else (msg.text or "")
     set_setting("welcome_text", new_text)
@@ -7206,7 +7227,7 @@ async def msg_admin_welcome_text(msg: Message, state: FSMContext):
 
 @router.message(FormState.admin_edit_welcome_photo)
 async def msg_admin_welcome_photo(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     if not msg.photo:
         await msg.answer("⚠️ Harap kirimkan berupa <b>Foto / Gambar</b> (bukan teks/dokumen), atau klik Batal.", parse_mode="HTML")
@@ -7668,7 +7689,7 @@ async def cb_list_wildcard_menu(cb: CallbackQuery):
 # ==============================================================================
 @router.callback_query(F.data == "adm_bugs_menu")
 async def cb_adm_bugs_menu(cb: CallbackQuery, state: FSMContext = None):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     if state:
         await state.clear()
@@ -7692,7 +7713,7 @@ async def cb_adm_bugs_menu(cb: CallbackQuery, state: FSMContext = None):
 
 @router.callback_query(F.data.startswith("bug_act:"))
 async def cb_bug_act(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     parts = cb.data.split(":")
     act = parts[1]
@@ -7724,7 +7745,7 @@ async def cb_bug_act(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.admin_add_bug_preset)
 async def msg_admin_add_bug_preset(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     raw = msg.text.replace(",", "\n")
     items = [x.strip().replace("http://", "").replace("https://", "").split("/")[0] for x in raw.splitlines() if x.strip()]
@@ -7920,7 +7941,7 @@ async def render_external_injected(msg_or_cb, ext_acc: dict, mode: str, bug_val:
 # ==============================================================================
 @router.callback_query(F.data == "adm_broadcast_menu")
 async def cb_adm_broadcast_menu(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     await state.set_state(FormState.admin_broadcast_msg)
     with db_conn() as conn:
@@ -7938,7 +7959,7 @@ async def cb_adm_broadcast_menu(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.admin_broadcast_msg)
 async def msg_admin_broadcast_exec(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     await state.clear()
     with db_conn() as conn:
@@ -8377,7 +8398,7 @@ async def cb_scan_direct_inject(cb: CallbackQuery, state: FSMContext):
 # --- FITUR CHANGE DOMAIN VPS (UTAMA & REMOTE) ---
 @router.callback_query(F.data == "adm_chg_domain_menu")
 async def cb_adm_chg_domain_menu(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     await state.clear()
     with db_conn() as conn:
@@ -8400,7 +8421,7 @@ async def cb_adm_chg_domain_menu(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("chg_dom_pick:"))
 async def cb_chg_dom_pick(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     sid = int(cb.data.split(":")[1])
     with db_conn() as conn:
@@ -8422,7 +8443,7 @@ async def cb_chg_dom_pick(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.admin_change_domain_input)
 async def msg_admin_change_domain_input(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     global DEFAULT_DOMAIN
     data = await state.get_data()
@@ -8462,8 +8483,161 @@ async def msg_admin_change_domain_input(msg: Message, state: FSMContext):
 
 # --- FITUR GANTI TEMA TAMPILAN BOT ---
 @router.callback_query(F.data == "adm_theme_menu")
+
+# === MULTI-ADMIN + AUDIT LOG ===
+@router.callback_query(F.data == "adm_admin_list")
+async def cb_adm_admin_list(cb: CallbackQuery):
+    if not is_owner(cb.from_user.id):
+        await cb.answer("Hanya owner.", show_alert=True); return
+    with db_conn() as conn:
+        rows = conn.execute("SELECT * FROM admins ORDER BY role DESC, created_at ASC").fetchall()
+    lines = ["<b>👥 KELOLA ADMIN</b>\n━━━━━━━━━━━━━━━━━━━━━━",
+             "• <b>Owner</b> (👑): semua akses", "• <b>Admin</b> (⚙️): manajemen akun",
+             f"• Total: <b>{len(rows)}</b>", "\n<b>Daftar:</b>"]
+    kb = []
+    for r in rows:
+        role_icon = "👑" if r["role"] == "owner" else "⚙️"
+        uid = r["user_id"]
+        uname = ""
+        try:
+            info = await bot.get_chat(uid)
+            uname = f" (@{info.username})" if info.username else ""
+        except Exception:
+            pass
+        lines.append(f"{role_icon} <b>{uid}</b>{html.escape(uname)} — {r['role']}")
+        if r["role"] != "owner":
+            kb.append([InlineKeyboardButton(text=f"🗑 Hapus Admin {uid}", callback_data=f"del_admin:{uid}")])
+    kb.append([InlineKeyboardButton(text="➕ Tambah Admin", callback_data="add_admin_start")])
+    kb.append([InlineKeyboardButton(text="🔍 Audit Log", callback_data="adm_audit_log")])
+    kb.append([InlineKeyboardButton(text="⬅️ Panel Admin", callback_data="admin_home")])
+    await safe_edit_Basic(cb, "\n".join(lines), parse_mode="HTML",
+                          reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@router.callback_query(F.data.startswith("del_admin:"))
+async def cb_del_admin(cb: CallbackQuery):
+    if not is_owner(cb.from_user.id):
+        await cb.answer("Hanya owner.", show_alert=True); return
+    uid = int(cb.data.split(":")[1])
+    if uid == ADMIN_ID:
+        await cb.answer("Tidak bisa hapus owner.", show_alert=True); return
+    with db_conn() as conn:
+        conn.execute("DELETE FROM admins WHERE user_id=? AND role!='owner'", (uid,))
+        conn.commit()
+    log_activity("ADMIN_REMOVE", f"Admin {uid} dihapus", ADMIN_ID)
+    await cb.answer(f"Admin {uid} dihapus.", show_alert=True)
+    await cb_adm_admin_list(cb)
+
+@router.callback_query(F.data == "add_admin_start")
+async def cb_add_admin_start(cb: CallbackQuery, state: FSMContext):
+    if not is_owner(cb.from_user.id):
+        await cb.answer("Hanya owner.", show_alert=True); return
+    await state.set_state(FormState.admin_add_admin_input)
+    await safe_edit_Basic(cb,
+        "👥 <b>TAMBAH ADMIN BARU</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Kirimkan <b>User ID Telegram</b> orang yang akan dijadikan admin.\n"
+        "Contoh: <code>123456789</code>\n\n"
+        "Admin dapat membuat/menghapus akun & melihat statistik server.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Batal", callback_data="adm_admin_list")]
+        ]))
+
+@router.message(FormState.admin_add_admin_input)
+async def msg_add_admin_input(msg: Message, state: FSMContext):
+    if not is_owner(msg.from_user.id): return
+    raw = (msg.text or "").strip().lstrip("@").split()[0]
+    try:
+        uid = int(raw)
+    except ValueError:
+        await msg.answer("⚠️ Format tidak valid. Kirimkan angka User ID Telegram.",
+                         reply_markup=admin_menu_kb())
+        await state.clear()
+        return
+    if is_admin(uid):
+        await msg.answer("⚠️ User ini sudah jadi admin/owner.", reply_markup=admin_menu_kb())
+        await state.clear()
+        return
+    with db_conn() as conn:
+        conn.execute("INSERT OR REPLACE INTO admins (user_id, role, created_at) VALUES (?, 'admin', ?)",
+                     (uid, int(time.time())))
+        conn.commit()
+    log_activity("ADMIN_ADD", f"Admin {uid} ditambahkan", ADMIN_ID)
+    try:
+        await bot.send_message(uid, "🎉 Anda telah dijadikan <b>Admin</b> pada bot ini.",
+                               parse_mode="HTML")
+    except Exception:
+        pass
+    await msg.answer(f"✅ User <code>{uid}</code> sekarang admin.", parse_mode="HTML",
+                     reply_markup=admin_menu_kb())
+    await state.clear()
+
+@router.callback_query(F.data == "adm_audit_log")
+async def cb_audit_log(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        await cb.answer("Akses ditolak.", show_alert=True); return
+    uid = cb.from_user.id
+    if is_owner(uid):
+        with db_conn() as conn:
+            rows = conn.execute("SELECT * FROM admins ORDER BY created_at DESC").fetchall()
+        lines = ["<b>🔍 AUDIT LOG</b>\n━━━━━━━━━━━━━━━━━━━━━━",
+                 "Pilih sumber log:"]
+        kb = [[InlineKeyboardButton(text="🌐 Semua Admin", callback_data="audit_log:all")]]
+        for r in rows:
+            role_icon = "👑" if r["role"] == "owner" else "⚙️"
+            uname = ""
+            try:
+                info = await bot.get_chat(r["user_id"])
+                uname = f" (@{info.username})" if info.username else ""
+            except Exception:
+                pass
+            kb.append([InlineKeyboardButton(
+                text=f"{role_icon} {r['user_id']}{uname}",
+                callback_data=f"audit_log:{r['user_id']}"
+            )])
+        kb.append([InlineKeyboardButton(text="⬅️ Panel Admin", callback_data="admin_home")])
+        await safe_edit_Basic(cb, "\n".join(lines), parse_mode="HTML",
+                              reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    else:
+        await cb_show_audit(cb, uid)
+
+async def cb_show_audit(cb, filter_uid=None):
+    now = int(time.time())
+    with db_conn() as conn:
+        if filter_uid:
+            rows = conn.execute(
+                "SELECT * FROM activity_logs WHERE admin_id=? ORDER BY id DESC LIMIT 50",
+                (filter_uid,)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM activity_logs WHERE admin_id>0 ORDER BY id DESC LIMIT 50").fetchall()
+        admins = {r["user_id"]: r for r in conn.execute("SELECT * FROM admins").fetchall()}
+    title = f"🔍 AUDIT LOG — {filter_uid}" if filter_uid else "🔍 AUDIT LOG — Semua Admin"
+    lines = [f"<b>{title}</b>\n━━━━━━━━━━━━━━━━━━━━━━"]
+    if not rows:
+        lines.append("<i>Belum ada log.</i>")
+    for r in rows:
+        ts = datetime.fromtimestamp(r["ts"]).strftime("%d/%m %H:%M")
+        actor = admins.get(r["admin_id"], {})
+        role_icon = "👑" if actor.get("role") == "owner" else ("⚙️" if r["admin_id"] else "🤖")
+        det = html.escape(str(r["detail"])[:90])
+        lines.append(f"{role_icon} <code>{ts}</code> <b>{html.escape(r['event'])}</b>\n   {det}")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Kembali", callback_data="adm_admin_list")]
+    ])
+    await safe_edit_Basic(cb, "\n".join(lines), parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(F.data.startswith("audit_log:"))
+async def cb_show_audit_filter(cb: CallbackQuery):
+    if not is_owner(cb.from_user.id):
+        await cb.answer("Hanya owner.", show_alert=True); return
+    filter_uid = cb.data.split(":")[1]
+    await cb.answer("⏳ Memuat...")
+    filter_uid = None if filter_uid == "all" else int(filter_uid)
+    await cb_show_audit(cb, filter_uid)
+
+# ============================================================
+
 async def cb_adm_theme_menu(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     cur_theme = get_theme_key()
     th_obj = get_active_theme()
@@ -8494,7 +8668,7 @@ async def cb_adm_theme_menu(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("set_theme:"))
 async def cb_set_theme(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     t_key = cb.data.split(":")[1]
     if t_key in THEMES_CATALOG:
@@ -8505,7 +8679,7 @@ async def cb_set_theme(cb: CallbackQuery):
 # --- FITUR AUTO-HEAL & NOTIFIKASI STATUS SERVER ---
 @router.callback_query(F.data == "adm_autoheal_menu")
 async def cb_adm_autoheal_menu(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     heal_en = "🟢 ON (Aktif)" if get_setting("auto_heal_enabled", "1") == "1" else "🔴 OFF"
     notif_en = "🟢 ON (Aktif)" if get_setting("notif_server_status", "1") == "1" else "🔴 OFF"
@@ -8536,7 +8710,7 @@ async def cb_adm_autoheal_menu(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("heal_act:"))
 async def cb_heal_act(cb: CallbackQuery):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     act = cb.data.split(":")[1]
     if act == "toggle_heal":
@@ -8583,7 +8757,7 @@ async def cb_heal_act(cb: CallbackQuery):
 # --- FITUR V14: AUTO-REPORT DATA USER LOGIN KE TOPIK GRUP ---
 @router.message(Command("setlogin"))
 async def cmd_set_login_topic(msg: Message):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     if msg.chat.id >= 0:
         await msg.reply("⚠️ Perintah <code>/setlogin</code> harus diketik di dalam <b>Grup / Topik Grup</b> tujuan!", parse_mode="HTML")
@@ -8724,7 +8898,7 @@ async def dispatch_login_reports(also_send_to_chat_id: int = None) -> int:
 
 @router.callback_query(F.data == "adm_login_rep_menu")
 async def cb_adm_login_rep_menu(cb: CallbackQuery, state: FSMContext = None):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     if state:
         await state.clear()
@@ -8791,7 +8965,7 @@ async def cb_adm_login_rep_menu(cb: CallbackQuery, state: FSMContext = None):
 
 @router.callback_query(F.data.startswith("lrep_intv:"))
 async def cb_lrep_intv(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     mins = int(cb.data.split(":")[1])
     set_setting("login_report_interval_min", str(mins))
@@ -8801,7 +8975,7 @@ async def cb_lrep_intv(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("lrep_bind:"))
 async def cb_lrep_bind(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     _, cid, tid = cb.data.split(":")
     set_setting("group_chat_id", cid)
@@ -8812,7 +8986,7 @@ async def cb_lrep_bind(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("lrep_act:"))
 async def cb_lrep_act(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     act = cb.data.split(":")[1]
     if act == "toggle":
@@ -8848,7 +9022,7 @@ async def cb_lrep_act(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.admin_login_rep_interval)
 async def msg_admin_login_rep_interval(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     m = re.search(r"\d+", (msg.text or "").strip())
     mins = max(1, int(m.group(0))) if m else 60
@@ -8919,7 +9093,7 @@ async def auto_heal_monitor_worker():
 # --- FITUR V13: KELOLA PREFIX NAMA AKUN OTOMATIS (MISAL: sunek-) ---
 @router.callback_query(F.data == "adm_prefix_menu")
 async def cb_adm_prefix_menu(cb: CallbackQuery, state: FSMContext = None):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     if state:
         await state.clear()
@@ -8961,7 +9135,7 @@ async def cb_adm_prefix_menu(cb: CallbackQuery, state: FSMContext = None):
 
 @router.callback_query(F.data.startswith("pfx_act:"))
 async def cb_pfx_act(cb: CallbackQuery, state: FSMContext):
-    if cb.from_user.id != ADMIN_ID:
+    if not is_admin(cb.from_user.id):
         return
     act = cb.data.split(":")[1]
     if act == "toggle":
@@ -8984,7 +9158,7 @@ async def cb_pfx_act(cb: CallbackQuery, state: FSMContext):
 
 @router.message(FormState.admin_set_prefix)
 async def msg_admin_set_prefix(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
+    if not is_admin(msg.from_user.id):
         return
     raw_p = re.sub(r"[^a-zA-Z0-9]", "", (msg.text or "").strip())
     await state.clear()
@@ -9386,6 +9560,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 EOF_EMBED_FILE
 chmod +x /etc/vpn-bot/bot.py 2>/dev/null || true
