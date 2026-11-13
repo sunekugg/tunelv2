@@ -800,9 +800,21 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
     real_port = peer[1] if peer and len(peer) > 1 else 0
 
     try:
-        initial = await asyncio.wait_for(client_reader.read(8192), timeout=10.0)
+        try:
+            initial = await asyncio.wait_for(client_reader.read(8192), timeout=1.5)
+        except asyncio.TimeoutError:
+            initial = b""
+
         if not initial:
-            client_writer.close()
+            # Klien diam = SSH: server (dropbear) yang bicara dulu. Ini terjadi
+            # lewat DNS tunnel, karena klien SSH menunggu banner bukan mengirim.
+            backend_reader, backend_writer = await asyncio.open_connection("127.0.0.1", 90)
+            sockname = backend_writer.get_extra_info("sockname")
+            lport = sockname[1] if sockname else 0
+            if lport:
+                ip_tag = f"{real_ip}:{real_port}" if real_ip == "127.0.0.1" else real_ip
+                record_port_ip(lport, ip_tag, "ssh")
+            await asyncio.gather(raw_pipe(client_reader, backend_writer, lport), raw_pipe(backend_reader, client_writer, lport))
             return
 
         if initial.startswith(b"PROXY "):
@@ -835,6 +847,18 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
             await backend_writer.drain()
             await asyncio.gather(raw_pipe(client_reader, backend_writer, lport), raw_pipe(backend_reader, client_writer, lport))
             return
+
+        # Lewat DNS tunnel (MTU ~128 byte) header HTTP bisa datang terpotong.
+        # Timbun sampai header lengkap; kalau tidak, routing /vmess|/vless|/trojan
+        # salah tebak dan koneksi jatuh ke dropbear.
+        while b"\r\n\r\n" not in initial and len(initial) < 16384:
+            try:
+                more = await asyncio.wait_for(client_reader.read(8192), timeout=10.0)
+            except asyncio.TimeoutError:
+                break
+            if not more:
+                break
+            initial += more
 
         headers_text = initial.decode("latin-1", errors="ignore")
         real_ip = extract_real_ip_from_headers(headers_text, real_ip)
@@ -973,7 +997,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 EOF_EMBED_FILE
 chmod +x /etc/vpn-bot/ws-bridge.py 2>/dev/null || true
 
@@ -5591,7 +5614,7 @@ async def cb_sd_regenservice(cb: CallbackQuery):
         unit = (
             "[Unit]\nDescription=SlowDNS dnstt Server\nAfter=network.target\n\n"
             "[Service]\n"
-            f"ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-{dom} -upstream 127.0.0.1:90 -record-type txt -dnstt-compat\n"
+            f"ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-{dom} -upstream 127.0.0.1:10015 -record-type txt -dnstt-compat\n"
             "Restart=on-failure\nRestartSec=3\n\n"
             "[Install]\nWantedBy=multi-user.target\n"
         )
@@ -10170,11 +10193,12 @@ UDPJSON
 # --- slowdns.service (dnstt bind :5300, target dropbear :90) ---
 cat > /etc/systemd/system/slowdns.service <<SDSVCEOF
 [Unit]
-Description=SlowDNS dnstt Server
-After=network.target
+Description=SlowDNS dnstt Server (mux SSH + Xray via ws-bridge)
+After=network.target vpn-ws-bridge.service
+Wants=vpn-ws-bridge.service
 
 [Service]
-ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-${DOMAIN} -upstream 127.0.0.1:90 -record-type txt -dnstt-compat
+ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-${DOMAIN} -upstream 127.0.0.1:10015 -record-type txt -dnstt-compat
 Restart=on-failure
 RestartSec=3
 
@@ -11152,11 +11176,12 @@ UDPJSON
 # --- slowdns.service (dnstt bind :5300, target dropbear :90) ---
 cat > /etc/systemd/system/slowdns.service <<SDSVCEOF
 [Unit]
-Description=SlowDNS dnstt Server
-After=network.target
+Description=SlowDNS dnstt Server (mux SSH + Xray via ws-bridge)
+After=network.target vpn-ws-bridge.service
+Wants=vpn-ws-bridge.service
 
 [Service]
-ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-${DOMAIN} -upstream 127.0.0.1:90 -record-type txt -dnstt-compat
+ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-${DOMAIN} -upstream 127.0.0.1:10015 -record-type txt -dnstt-compat
 Restart=on-failure
 RestartSec=3
 
