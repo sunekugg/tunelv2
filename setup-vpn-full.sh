@@ -4325,7 +4325,7 @@ THEMES_CATALOG = {
         "line": "────────────────────────────",
         "bullet": "•",
         "btn_create": "🦆 Buat",
-        "btn_trial": "🐒 Trial",
+        "btn_trial": "🆓 Trial",
     },
     "cyberpunk": {
         "name": "Cyberpunk Neon ⚡",
@@ -4333,7 +4333,7 @@ THEMES_CATALOG = {
         "line": "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "bullet": "⚡",
         "btn_create": "⚡ Buat",
-        "btn_trial": "🧪 Trial",
+        "btn_trial": "🆓 Trial",
     },
     "royalgold": {
         "name": "Royal Gold VVIP 👑",
@@ -4341,7 +4341,7 @@ THEMES_CATALOG = {
         "line": "════════════════════════════",
         "bullet": "⚜️",
         "btn_create": "👑 Buat",
-        "btn_trial": "💎 Trial",
+        "btn_trial": "🆓 Trial",
     },
     "matrix": {
         "name": "Hacker Matrix 💻",
@@ -4349,7 +4349,7 @@ THEMES_CATALOG = {
         "line": "============================",
         "bullet": "▸",
         "btn_create": "💻 Buat",
-        "btn_trial": "🔓 Trial",
+        "btn_trial": "🆓 Trial",
     },
     "gaming": {
         "name": "Gaming Pro Extreme 🎮",
@@ -4357,7 +4357,7 @@ THEMES_CATALOG = {
         "line": "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬",
         "bullet": "🔥",
         "btn_create": "🎮 Buat",
-        "btn_trial": "🚀 Trial",
+        "btn_trial": "🆓 Trial",
     },
 }
 
@@ -4506,16 +4506,18 @@ def build_welcome_text(user_id: int) -> str:
 
 def main_menu_kb(user_id: int):
     th = get_active_theme()
-    c_lbl = th["btn_create"]
     t_lbl = th["btn_trial"]
+    # Ikon khusus per protokol (tetap memakai label teks dari tema aktif)
+    icons = {"ssh": "⚖️", "vmess": "📡", "vless": "🖥", "trojan": "🔊"}
+    c_btn = {p: f"{icons[p]} {th['btn_create'].split(' ',1)[1].strip()} {p.upper()}" for p in icons}
     buttons = [
         [
-            InlineKeyboardButton(text=f"{c_lbl} SSH", callback_data="create:ssh:0"),
-            InlineKeyboardButton(text=f"{c_lbl} VMess", callback_data="create:vmess:0")
+            InlineKeyboardButton(text=c_btn["ssh"], callback_data="create:ssh:0"),
+            InlineKeyboardButton(text=c_btn["vmess"], callback_data="create:vmess:0")
         ],
         [
-            InlineKeyboardButton(text=f"{c_lbl} VLESS", callback_data="create:vless:0"),
-            InlineKeyboardButton(text=f"{c_lbl} Trojan", callback_data="create:trojan:0")
+            InlineKeyboardButton(text=c_btn["vless"], callback_data="create:vless:0"),
+            InlineKeyboardButton(text=c_btn["trojan"], callback_data="create:trojan:0")
         ],
         [
             InlineKeyboardButton(text=f"{t_lbl} SSH", callback_data="create:ssh:1"),
