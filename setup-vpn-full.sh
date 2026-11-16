@@ -1497,6 +1497,7 @@ def format_ssh_html(host, user, passwd, bug_host="bug.com", ip_limit=2, exp_str=
         f"<pre>————————————————————————————————————</pre>"
     )
 
+
 def format_vmess_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
     h = html.escape
     ws_tls = make_vmess_b64(remarks, host, 443, uuid_str, "ws", "/vmess", "tls")
@@ -1519,7 +1520,7 @@ def format_vmess_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
         f"id             : {h(uuid_str)}\n"
         "alterId        : 0\n"
         "Security       : auto\n"
-        "network        : ws,grpc,upgrade\n"
+        "network        : ws,grpc,upgrade,tcp\n"
         "path ws        : /vmess - /whatever\n"
         "serviceName    : vmess\n"
         "path upgrade   : /upvmess\n"
@@ -4319,7 +4320,7 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
             [make_copy_btn("📋 Salin Payload WS", p_ws, f"cp:{acc_id}:p_ws"), make_copy_btn("📋 Salin Payload Enhanced", p_enh, f"cp:{acc_id}:p_enh")]
         ])
     elif proto == "vmess":
-        out_html = engine.format_vmess_html(uname, city, isp, host, secret, exp_display, ip_limit=ip_limit)
+        out_html = engine.format_vmess_html(uname, city, isp, host, secret, exp_display, ip_limit=ip_limit) + _slowdns_info_block(host)
         l_wstls = engine.make_vmess_b64(uname, host, 443, secret, "ws", "/vmess", "tls")
         l_wsntls = engine.make_vmess_b64(uname, host, 80, secret, "ws", "/vmess", "none")
         l_grpc = engine.make_vmess_b64(uname, host, 443, secret, "grpc", "vmess", "tls")
@@ -4329,10 +4330,11 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
             [make_copy_btn("📋 Salin UUID", secret, f"cp:{acc_id}:uuid")],
             [make_copy_btn("📋 Salin WS TLS", l_wstls, f"cp:{acc_id}:wstls"), make_copy_btn("📋 Salin WS No-TLS", l_wsntls, f"cp:{acc_id}:wsntls")],
             [make_copy_btn("📋 Salin gRPC", l_grpc, f"cp:{acc_id}:grpc"), make_copy_btn("📋 Salin Upgrade TLS", l_uptls, f"cp:{acc_id}:uptls")],
-            [make_copy_btn("📋 Salin Upgrade No-TLS", l_upntls, f"cp:{acc_id}:upntls")]
+            [make_copy_btn("📋 Salin Upgrade No-TLS", l_upntls, f"cp:{acc_id}:upntls")],
+            [make_copy_btn("🌐 Salin SlowDNS (NTLS)", l_wstls, f"cp:{acc_id}:sdntls")]
         ])
     elif proto == "vless":
-        out_html = engine.format_vless_html(uname, city, isp, host, secret, exp_display, ip_limit=ip_limit)
+        out_html = engine.format_vless_html(uname, city, isp, host, secret, exp_display, ip_limit=ip_limit) + _slowdns_info_block(host)
         l_wstls = f"vless://{secret}@{host}:443?path=/vless&security=tls&encryption=none&host={host}&type=ws&sni={host}#{uname}"
         l_wsntls = f"vless://{secret}@{host}:80?path=/vless&security=none&encryption=none&host={host}&type=ws#{uname}"
         l_grpc = f"vless://{secret}@{host}:443?mode=gun&security=tls&encryption=none&type=grpc&serviceName=vless&sni={host}#{uname}"
@@ -4342,17 +4344,19 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
             [make_copy_btn("📋 Salin UUID", secret, f"cp:{acc_id}:uuid")],
             [make_copy_btn("📋 Salin WS TLS", l_wstls, f"cp:{acc_id}:wstls"), make_copy_btn("📋 Salin WS No-TLS", l_wsntls, f"cp:{acc_id}:wsntls")],
             [make_copy_btn("📋 Salin gRPC", l_grpc, f"cp:{acc_id}:grpc"), make_copy_btn("📋 Salin Upgrade TLS", l_uptls, f"cp:{acc_id}:uptls")],
-            [make_copy_btn("📋 Salin Upgrade No-TLS", l_upntls, f"cp:{acc_id}:upntls")]
+            [make_copy_btn("📋 Salin Upgrade No-TLS", l_upntls, f"cp:{acc_id}:upntls")],
+            [make_copy_btn("🌐 Salin SlowDNS (NTLS)", l_wsntls, f"cp:{acc_id}:sdntls")]
         ])
     else:
-        out_html = engine.format_trojan_html(uname, city, isp, host, secret, exp_display, ip_limit=ip_limit)
+        out_html = engine.format_trojan_html(uname, city, isp, host, secret, exp_display, ip_limit=ip_limit) + _slowdns_info_block(host)
         l_wstls = f"trojan://{secret}@{host}:443?path=/trojan&security=tls&host={host}&type=ws&sni={host}#{uname}"
         l_grpc = f"trojan://{secret}@{host}:443?mode=gun&security=tls&type=grpc&serviceName=trojan&sni={host}#{uname}"
         l_uptls = f"trojan://{secret}@{host}:443?path=/uptrojan&security=tls&host={host}&type=httpupgrade&sni={host}#{uname}"
         kb_rows.extend([
             [make_copy_btn("📋 Salin Key / UUID", secret, f"cp:{acc_id}:uuid")],
             [make_copy_btn("📋 Salin WS TLS", l_wstls, f"cp:{acc_id}:wstls"), make_copy_btn("📋 Salin gRPC", l_grpc, f"cp:{acc_id}:grpc")],
-            [make_copy_btn("📋 Salin Upgrade TLS", l_uptls, f"cp:{acc_id}:uptls")]
+            [make_copy_btn("📋 Salin Upgrade TLS", l_uptls, f"cp:{acc_id}:uptls")],
+            [make_copy_btn("🌐 Salin SlowDNS (NTLS)", l_wstls, f"cp:{acc_id}:sdntls")]
         ])
 
     # Inject Bug, Tukar Protokol, Pindah Server pindah ke 🛠️ Kelola Akun Mandiri.
@@ -4732,6 +4736,29 @@ def main_menu_kb(user_id: int):
         buttons.append([InlineKeyboardButton(text="⚙️ Panel Admin", callback_data="admin_home")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def _slowdns_pubkey() -> str:
+    try:
+        with open("/etc/slowdns/server.pub") as _f:
+            return _f.read().strip()
+    except Exception:
+        return ""
+
+def _slowdns_info_block(host: str) -> str:
+    """Blok info SlowDNS utk akun Xray (NS, Public Key, Port). Kosong bila off."""
+    if not os.path.exists("/etc/slowdns/server.key"):
+        return ""
+    _pub = _slowdns_pubkey()
+    return (
+        "\n" + "————————————————————————————————————\n"
+        "               SLOWDNS (DNS TUNNEL)\n"
+        "————————————————————————————————————\n"
+        f"NS Domain      : <code>ns-{html.escape(host)}:5300</code>\n"
+        f"Public Key     : <code>{html.escape(_pub)}</code>\n"
+        "Port DNS       : 53 (redirect) / 5300\n"
+        "Mode           : WebSocket Non-TLS (NTLS)\n"
+        "Alamat klien   : 127.0.0.1 (via dnstt-client)\n"
+        "————————————————————————————————————"
+    )
 def admin_menu_kb():
     bot_on = get_setting("bot_status", "1") == "1"
     bot_lbl = "🤖 Status Bot: ON 🟢" if bot_on else "🤖 Status Bot: OFF 🔴"
@@ -10287,6 +10314,21 @@ cat > /etc/udp/config.json <<'UDPJSON'
   "auth": { "mode": "passwords" }
 }
 UDPJSON
+# --- Free port 53: matikan DNSStubListener agar tidak bentrok dengan slowdns ---
+if systemctl list-unit-files 2>/dev/null | grep -q '^systemd-resolved.service'; then
+    mkdir -p /etc/systemd/resolved.conf.d
+    cat > /etc/systemd/resolved.conf.d/10-slowdns.conf <<EOF53
+[Resolve]
+DNSStubListener=no
+EOF53
+    systemctl daemon-reload
+    systemctl restart systemd-resolved 2>/dev/null || systemctl stop systemd-resolved 2>/dev/null || true
+    systemctl disable systemd-resolved 2>/dev/null || true
+fi
+if [ -f /etc/systemd/resolved.conf ]; then
+    sed -i 's/^#*[[:space:]]*DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf 2>/dev/null || true
+fi
+echo " Port 53 diperiksa bebas: $(ss -ulnp 2>/dev/null | grep -c ':53 ' || true) listener"
 # --- slowdns.service (dnstt bind :5300, target dropbear :90) ---
 cat > /etc/systemd/system/slowdns.service <<SDSVCEOF
 [Unit]
@@ -10295,7 +10337,7 @@ After=network.target vpn-ws-bridge.service
 Wants=vpn-ws-bridge.service
 
 [Service]
-ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-${DOMAIN} -upstream 127.0.0.1:10015 -record-type txt -dnstt-compat
+ExecStart=/usr/local/bin/dnstt-server -udp :5300 -privkey-file /etc/slowdns/server.key -mtu 1232 -domain ns-${DOMAIN} -upstream 127.0.0.1:10015 -record-type txt -dnstt-compat
 Restart=on-failure
 RestartSec=3
 
@@ -11281,7 +11323,7 @@ After=network.target vpn-ws-bridge.service
 Wants=vpn-ws-bridge.service
 
 [Service]
-ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-${DOMAIN} -upstream 127.0.0.1:10015 -record-type txt -dnstt-compat
+ExecStart=/usr/local/bin/dnstt-server -udp :5300 -privkey-file /etc/slowdns/server.key -mtu 1232 -domain ns-${DOMAIN} -upstream 127.0.0.1:10015 -record-type txt -dnstt-compat
 Restart=on-failure
 RestartSec=3
 
