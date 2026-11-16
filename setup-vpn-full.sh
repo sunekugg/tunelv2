@@ -1170,8 +1170,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
 EOF_EMBED_FILE
 chmod +x /etc/vpn-bot/proto-daemons.py 2>/dev/null || true
 
@@ -1188,6 +1186,7 @@ import shutil
 import subprocess
 import time
 
+ZIVPN_CONFIG = "/etc/zivpn/config.json"
 XRAY_CONFIG = "/etc/xray/config.json"
 XRAY_ACCESS_LOG = "/var/log/xray/access.log"
 DROPBEAR_LOG = "/var/log/dropbear.log"
@@ -1253,6 +1252,106 @@ def run_argv(argv, timeout=None):
 def load_xray_config():
     with open(XRAY_CONFIG, "r") as f:
         return json.load(f)
+
+
+def load_zivpn_config():
+    """Baca /etc/zivpn/config.json. Raise FileNotFoundError bila belum ada."""
+    with open(ZIVPN_CONFIG, "r") as f:
+        return json.load(f)
+
+
+def save_zivpn_config(cfg):
+    """Simpan config ZiVPN secara atomik (sekali tulis, tak menyisakan file korup)."""
+    atomic_write_json(ZIVPN_CONFIG, cfg)
+
+
+def restart_zivpn():
+    """Restart service zivpn. Bila service belum terpasang (unit tak ada), anggap sukses
+    (config tetap tersimpan; restart akan dilakukan saat service nanti terpasang)."""
+    if run_cmd("systemctl cat zivpn >/dev/null 2>&1").returncode != 0:
+        return True
+    res = run_cmd("systemctl restart zivpn")
+    if res.returncode != 0:
+        res = run_argv(["systemctl", "restart", "zivpn"])
+    return res.returncode == 0
+
+
+_ZIVPN_PASS_RE = re.compile(r"^[A-Za-z0-9]{3,64}$")
+
+
+def add_zivpn_user(password, uuid_str=None):
+    """Tambah password plaintext ke auth.passwords ZiVPN. Return (ok, pesan).
+    Signature menerima uuid_str opsional utk kompatibilitas add_xray_user (uname=secret=password)."""
+    if not isinstance(password, str) or not _ZIVPN_PASS_RE.match(password):
+        return False, "Password ZiVPN harus huruf/angka, minimal 3 karakter."
+    if not os.path.exists(ZIVPN_CONFIG):
+        return False, "config zivpn belum ada"
+    try:
+        cfg = load_zivpn_config()
+    except Exception as e:
+        return False, f"Gagal baca config zivpn: {e}"
+    auth = cfg.setdefault("auth", {})
+    if auth.get("mode") != "passwords":
+        return False, "Config zivpn bukan mode 'passwords'."
+    conf = auth.get("config")
+    if not isinstance(conf, list):
+        return False, "Config zivpn 'auth.config' bukan list."
+    if password not in conf:
+        conf.append(password)
+    try:
+        save_zivpn_config(cfg)
+    except Exception as e:
+        return False, f"Gagal simpan config zivpn: {e}"
+    if not restart_zivpn():
+        return False, "Gagal restart service zivpn."
+    return True, f"Password ZiVPN {password} berhasil ditambahkan."
+
+
+def remove_zivpn_user(password):
+    """Hapus password dari auth.passwords ZiVPN. Array tak pernah dikosongkan (minimal 1 default 'zivpn')."""
+    if not os.path.exists(ZIVPN_CONFIG):
+        return False, "config zivpn belum ada"
+    try:
+        cfg = load_zivpn_config()
+    except Exception as e:
+        return False, f"Gagal baca config zivpn: {e}"
+    auth = cfg.get("auth") or {}
+    conf = auth.get("config")
+    if not isinstance(conf, list):
+        return True, "OK (auth.config bukan list, tidak ada yang dihapus)."
+    new_conf = [p for p in conf if p != password]
+    # JANGAN pernah kosongkan: sisakan minimal 1 default 'zivpn'
+    if not new_conf:
+        new_conf = ["zivpn"]
+    if new_conf == conf:
+        return True, "OK (password tidak ditemukan)."
+    auth["config"] = new_conf
+    cfg["auth"] = auth
+    try:
+        save_zivpn_config(cfg)
+    except Exception as e:
+        return False, f"Gagal simpan config zivpn: {e}"
+    restart_zivpn()
+    return True, f"Password ZiVPN {password} berhasil dihapus."
+
+
+def format_zivpn_output(password, domain, city, isp, exp_str):
+    """Return HTML box ZiVPN persis sesuai SPEK (Success + <pre><code> ┌│─└┘)."""
+    h = html.escape
+    label_w = 10  # pad label kiri agar rata: 'Host' -> 'Host' + 7 spasi = kolom 11 lalu ' : '
+    def _row(label, value):
+        return f"│ {label.ljust(label_w)} : {value}"
+    box = (
+        "CREATE AKUN ZIVPN\n"
+        "┌────────────────────────┐\n"
+        f"{_row('Host', h(domain))}\n"
+        f"{_row('CITY', h(city))}\n"
+        f"{_row('ISP', h(isp))}\n"
+        f"{_row('Pass', h(password))}\n"
+        f"{_row('Expire', h(exp_str))}\n"
+        "└────────────────────────┘"
+    )
+    return f"<b>Success:</b>\n<pre><code>{box}</code></pre>"
 
 def ensure_xray_stats(cfg):
     """Pastikan stats/api Xray ada DAN outbound 'api' di akhir (bukan default).
@@ -1327,6 +1426,8 @@ def create_ssh_user(username, password, exp_date_str):
 
 
 def add_xray_user(proto, username, uuid_str):
+    if proto == "zivpn":
+        return add_zivpn_user(username, uuid_str)
     safe_username(username)
     safe_secret(uuid_str)
     cfg = load_xray_config()
@@ -1344,6 +1445,8 @@ def add_xray_user(proto, username, uuid_str):
     return save_and_reload_xray(cfg)
 
 def remove_xray_user(proto, username):
+    if proto == "zivpn":
+        return remove_zivpn_user(username)
     safe_username(username)
     cfg = load_xray_config()
     changed = False
@@ -2516,6 +2619,9 @@ def create_remote_account(srv_row, proto: str, uname: str, secret: str, exp_ssh_
         q = sh_quote
         cmd = f"userdel -f {q(uname)} 2>/dev/null; useradd -e {exp_ssh_date} -s /bin/bash -d /tmp/{q(uname)} -m {q(uname)} && echo {q(uname + ':' + secret)} | chpasswd -c SHA512"
         exec_ssh_sync(ssh, cmd, timeout=10)
+    elif proto == "zivpn":
+        cmd = f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.add_zivpn_user({sh_quote(secret)})\""
+        exec_ssh_sync(ssh, cmd, timeout=10)
     else:
         cmd = f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.add_xray_user({sh_quote(proto)},{sh_quote(uname)},{sh_quote(secret)})\""
         exec_ssh_sync(ssh, cmd, timeout=10)
@@ -2526,6 +2632,8 @@ def remove_account_from_server(srv_row, proto: str, uname: str):
     if not srv_row or srv_row["is_local"] == 1:
         if proto == "ssh":
             delete_ssh_user(uname)
+        elif proto == "zivpn":
+            remove_zivpn_user(uname)
         else:
             remove_xray_user(proto, uname)
         return True
@@ -2533,6 +2641,8 @@ def remove_account_from_server(srv_row, proto: str, uname: str):
         ssh = connect_remote_ssh(srv_row, timeout=10)
         if proto == "ssh":
             exec_ssh_sync(ssh, f"pkill -9 -u {sh_quote(uname)} 2>/dev/null; userdel -f {sh_quote(uname)} 2>/dev/null", timeout=10)
+        elif proto == "zivpn":
+            exec_ssh_sync(ssh, f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.remove_zivpn_user({sh_quote(uname)})\"", timeout=10)
         else:
             exec_ssh_sync(ssh, f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.remove_xray_user({sh_quote(proto)},{sh_quote(uname)})\"", timeout=10)
         ssh.close()
@@ -2544,6 +2654,9 @@ def add_account_to_server(srv_row, proto: str, uname: str, secret: str, exp_ssh_
     if not srv_row or srv_row["is_local"] == 1:
         if proto == "ssh":
             return create_ssh_user(uname, secret, exp_ssh_date)
+        elif proto == "zivpn":
+            ok, _ = add_zivpn_user(secret)
+            return ok
         else:
             ok, _ = add_xray_user(proto, uname, secret)
             return ok
@@ -2563,6 +2676,7 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
         db_ok = loc_act(["dropbear"])
         hap_ok = loc_act(["haproxy", "vpn-ws-bridge"])
         ngx_ok = loc_act(["nginx"])
+        zv_ok = loc_act(["zivpn"])
         ssl_ok = os.path.exists("/etc/xray/certs/fullchain.pem") and os.path.getsize("/etc/xray/certs/fullchain.pem") > 0
         return {
             "ok": True,
@@ -2572,6 +2686,7 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
             "haproxy": "🟢 Sudah Ada & Aktif" if hap_ok else "🔴 Belum Ada / Mati",
             "nginx": "🟢 Sudah Ada / Aktif" if ngx_ok else "🔴 Belum Ada / Mati",
             "ssl": "🟢 Sudah Ada / Aktif" if ssl_ok else "🔴 Belum Ada / Kosong",
+            "zivpn": "🟢 Sudah Ada & Aktif" if zv_ok else "⚪ Tidak Terpasang",
         }
 
     try:
@@ -2583,19 +2698,21 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
             "systemctl is-active --quiet vpn-ws-bridge 2>/dev/null && ws=active || ws=no; "
             "systemctl is-active --quiet nginx 2>/dev/null && nx=active || nx=no; "
             "if [ -s /etc/xray/certs/fullchain.pem ] || [ -s /etc/xray/xray.crt ]; then ssl=active; else ssl=no; fi; "
-            "echo RESULT:$xr:$db:$hp:$ws:$nx:$ssl"
+            "systemctl is-active --quiet zivpn 2>/dev/null && zv=active || zv=no; "
+            "echo RESULT:$xr:$db:$hp:$ws:$nx:$ssl:$zv"
         )
         _, out_str, _ = exec_ssh_sync(ssh, check_sh, timeout=10)
         ssh.close()
 
-        res_line = "no:no:no:no:no:no"
+        res_line = "no:no:no:no:no:no:no"
         for line in out_str.splitlines():
             if "RESULT:" in line:
                 res_line = line.split("RESULT:", 1)[1].strip()
                 break
 
-        parts = (res_line.split(":") + ["no"] * 6)[:6]
-        xr, db, hp, ws, nx, ssl_st = [p.strip() for p in parts]
+        # Kompatibel dgn remote lama (yang belum echo $zv): default 'no' bila kurang.
+        parts = (res_line.split(":") + ["no"] * 7)[:7]
+        xr, db, hp, ws, nx, ssl_st, zv = [p.strip() for p in parts]
 
         return {
             "ok": True,
@@ -2605,6 +2722,7 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
             "haproxy": "🟢 Sudah Ada & Aktif" if (hp == "active" or ws == "active") else "🔴 Belum Ada / Mati",
             "nginx": "🟢 Sudah Ada / Aktif" if nx == "active" else "🔴 Belum Ada / Mati",
             "ssl": "🟢 Sudah Ada / Aktif" if ssl_st == "active" else "🔴 Belum Ada / Kosong",
+            "zivpn": "🟢 Sudah Ada & Aktif" if zv == "active" else "⚪ Tidak Terpasang",
         }
     except Exception as e:
         return {
@@ -2616,6 +2734,7 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
             "haproxy": "⚪ Tidak Terhubung SSH",
             "nginx": "⚪ Tidak Terhubung SSH",
             "ssl": "⚪ Tidak Terhubung SSH",
+            "zivpn": "⚪ Tidak Terhubung SSH",
         }
 
 def use_existing_remote_vps(srv_row):
@@ -4347,6 +4466,13 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
             [make_copy_btn("📋 Salin Upgrade No-TLS", l_upntls, f"cp:{acc_id}:upntls")],
             [make_copy_btn("🌐 Salin SlowDNS (NTLS)", l_wsntls, f"cp:{acc_id}:sdntls")]
         ])
+    elif proto == "zivpn":
+        # ZiVPN: password/secret = key plaintext. Expire format '%d %B %Y %H:%M' (contoh 09 February 2026 11:57).
+        exp_str = datetime.fromtimestamp(acc_row["expired_at"]).strftime("%d %B %Y %H:%M")
+        out_html = engine.format_zivpn_output(secret, host, city, isp, exp_str)
+        kb_rows.append([
+            InlineKeyboardButton(text="🌐 Pindah Server", callback_data=f"move_srv_menu:{acc_id}")
+        ])
     else:
         out_html = engine.format_trojan_html(uname, city, isp, host, secret, exp_display, ip_limit=ip_limit) + _slowdns_info_block(host)
         l_wstls = f"trojan://{secret}@{host}:443?path=/trojan&security=tls&host={host}&type=ws&sni={host}#{uname}"
@@ -4698,7 +4824,7 @@ def main_menu_kb(user_id: int):
     th = get_active_theme()
     t_lbl = th["btn_trial"]
     # Ikon khusus per protokol (tetap memakai label teks dari tema aktif)
-    icons = {"ssh": "⚖️", "vmess": "📡", "vless": "🖥", "trojan": "🔊"}
+    icons = {"ssh": "⚖️", "vmess": "📡", "vless": "🖥", "trojan": "🔊", "zivpn": "🛡"}
     c_btn = {p: f"{icons[p]} {th['btn_create'].split(' ',1)[1].strip()} {p.upper()}" for p in icons}
     buttons = [
         [
@@ -4716,6 +4842,10 @@ def main_menu_kb(user_id: int):
         [
             InlineKeyboardButton(text=f"{t_lbl} VLESS", callback_data="create:vless:1"),
             InlineKeyboardButton(text=f"{t_lbl} Trojan", callback_data="create:trojan:1")
+        ],
+        [
+            InlineKeyboardButton(text="🛡 Buat ZiVPN", callback_data="create:zivpn:0"),
+            InlineKeyboardButton(text="🛡 Trial ZiVPN", callback_data="create:zivpn:1")
         ],
         [
             InlineKeyboardButton(text="🔍 Cek Status Bug / Host ISP", callback_data="bug_scanner_start")
@@ -5068,8 +5198,9 @@ def mandiri_kb(acc):
                      InlineKeyboardButton(text="🌐 Pindah Server", callback_data=f"move_srv_menu:{aid}")])
     else:
         rows.append([InlineKeyboardButton(text="🌐 Pindah Server", callback_data=f"move_srv_menu:{aid}")])
-    rows.append([InlineKeyboardButton(text="📄 Lihat Config", callback_data=f"view_my:{aid}"),
-                 InlineKeyboardButton(text="🎯 Inject Bug / Clash", callback_data=f"inj_menu:{aid}")])
+    rows.append([InlineKeyboardButton(text="📄 Lihat Config", callback_data=f"view_my:{aid}")] +
+                ([] if proto in ("ssh", "zivpn") else
+                 [InlineKeyboardButton(text="🎯 Inject Bug / Clash", callback_data=f"inj_menu:{aid}")]))
     if proto in ("vmess", "vless", "trojan"):
         rows.append([InlineKeyboardButton(text="🔗 Smart Subscription", callback_data=f"inj_extra:{aid}:sub")])
     rows.append([InlineKeyboardButton(text="⬅️ Kembali ke Akun Saya", callback_data="my_accounts")])
@@ -5390,8 +5521,23 @@ async def proceed_server_selection(cb: CallbackQuery, state: FSMContext, proto: 
         with db_conn() as conn:
             while conn.execute("SELECT 1 FROM accounts WHERE username=?", (uname,)).fetchone():
                 uname = apply_account_prefix(f"trial{random.randint(10000, 99999)}")
-        secret = f"123{random.choice('abcdef')}{random.randint(1, 9)}" if proto == "ssh" else str(uuid.uuid4())
+        if proto == "zivpn":
+            # ZiVPN trial: username = secret = password (plaintext), TANPA uuid.
+            secret = uname
+        else:
+            secret = f"123{random.choice('abcdef')}{random.randint(1, 9)}" if proto == "ssh" else str(uuid.uuid4())
         await finalize_account_creation(cb.message, cb.from_user, srv, proto, uname, secret, is_trial=1, edit_mode=True)
+    elif proto == "zivpn":
+        # ZiVPN REGULER: 1 input saja berupa Password/Key (bukan username).
+        # Username = password = secret (diisi di msg_create_password).
+        await state.update_data(proto="zivpn", is_trial=0, srv_id=srv_id, username="")
+        await state.set_state(FormState.create_password)
+        await safe_edit_Basic(
+            cb,
+            "<b>Buat Akun ZiVPN</b>\n────────────────────────────\n"
+            "🔑 Masukkan <b>Password / Key</b> ZiVPN (huruf/angka, min 3 karakter):",
+            parse_mode="HTML"
+        )
     else:
         await state.update_data(proto=proto, is_trial=0, srv_id=srv_id)
         await state.set_state(FormState.create_username)
@@ -5439,10 +5585,16 @@ async def msg_create_username(msg: Message, state: FSMContext):
 async def msg_create_password(msg: Message, state: FSMContext):
     passwd = msg.text.strip()
     data = await state.get_data()
+    # Validasi password ZiVPN (huruf/angka, min 3) — hanya utk proto zivpn.
+    if data.get("proto") == "zivpn":
+        clean = passwd.replace("-", "")
+        if not clean.isalnum() or len(clean) < 3:
+            await msg.answer("⚠️ Password ZiVPN harus huruf/angka, minimal 3 karakter. Coba lagi:")
+            return
     with db_conn() as conn:
         srv = conn.execute("SELECT * FROM servers WHERE id=?", (data["srv_id"],)).fetchone()
     await state.clear()
-    await finalize_account_creation(msg, msg.from_user, srv, "ssh", data["username"], passwd, is_trial=0, edit_mode=False)
+    await finalize_account_creation(msg, msg.from_user, srv, data.get("proto", "ssh"), data.get("username", passwd), passwd, is_trial=0, edit_mode=False)
 
 async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, uname: str, secret: str, is_trial: int, edit_mode: bool = False):
     try:
@@ -5472,6 +5624,8 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
         if srv["is_local"] == 1:
             if proto == "ssh":
                 created = engine.create_ssh_user(uname, secret, exp_ssh_date)
+            elif proto == "zivpn":
+                created, _msg = engine.add_zivpn_user(secret)
             else:
                 created, _msg = engine.add_xray_user(proto, uname, secret)
         else:
@@ -9719,8 +9873,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
 EOF_EMBED_FILE
 chmod +x /etc/vpn-bot/bot.py 2>/dev/null || true
 
@@ -10207,7 +10359,7 @@ vnstat --add -i "$IFACE" >/dev/null 2>&1 || true
 echo "[6/6b] Memasang SlowDNS (dnstt) & UDP-Custom..."
 ARCH_X=$(uname -m)
 case "$ARCH_X" in x86_64) XARCH="amd64";; aarch64|arm64) XARCH="arm64";; *) XARCH="amd64";; esac
-mkdir -p /etc/slowdns /etc/udp /etc/iptables
+mkdir -p /etc/slowdns /etc/udp /etc/iptables /etc/zivpn
 VAYDNS_BASE="https://raw.githubusercontent.com/sunekugg/tunelv2/main/bin"
 __fetch_raw() {  # $1=outfile $2=owner/repo/branch/path — fallback IP statis bila DNS mati
     local _OUT="$1" _P="$2" _IP
@@ -10277,11 +10429,30 @@ else
     UC_OK=1
 fi
 # Verifikasi binari SETELAH semua unduhan (dulu dicek sebelum unduh -> alarm palsu)
-for _BINCHK in vaydns-server udpgw udp-custom; do
+for _BINCHK in vaydns-server udpgw udp-custom zivpn; do
     if ! head -c4 "/usr/local/bin/$_BINCHK" 2>/dev/null | grep -q $'\x7fELF'; then
         echo "  !! PERINGATAN: $_BINCHK gagal diunduh — perbaiki DNS/koneksi lalu jalankan ulang installer"
     fi
 done
+# --- zivpn (ZiVPN UDP proxy :5667, binary Go statis tunggal) ---
+if ! head -c4 /usr/local/bin/zivpn 2>/dev/null | grep -q $'\\x7fELF'; then
+    rm -f /usr/local/bin/zivpn
+    __fetch_raw /usr/local/bin/zivpn \\
+        "zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${XARCH}" || true
+    if ! head -c4 /usr/local/bin/zivpn 2>/dev/null | grep -q $'\\x7fELF'; then
+        for _ZVURL in \\
+            "https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${XARCH}" \\
+            "https://ghfast.top/https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${XARCH}" \\
+            "https://gh-proxy.com/https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${XARCH}"; do
+            wget -qO /usr/local/bin/zivpn "$_ZVURL" 2>/dev/null || true
+            if [[ -s /usr/local/bin/zivpn ]] && head -c4 /usr/local/bin/zivpn 2>/dev/null | grep -q $'\\x7fELF'; then
+                echo "  -> zivpn diunduh dari: $_ZVURL"; break
+            fi
+            rm -f /usr/local/bin/zivpn
+        done
+    fi
+    chmod +x /usr/local/bin/zivpn 2>/dev/null || true
+fi
 # --- systemd-resolved: matikan agar :53 bebas ---
 # --- systemd-resolved: matikan agar :53 bebas ---
 systemctl stop systemd-resolved 2>/dev/null || true
@@ -10359,6 +10530,38 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 UCSVCEOF
+# --- zivpn: self-signed cert + config + service (UDP proxy :5667) ---
+if [[ ! -s /etc/zivpn/zivpn.crt || ! -s /etc/zivpn/zivpn.key ]]; then
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \\
+        -keyout /etc/zivpn/zivpn.key -out /etc/zivpn/zivpn.crt \\
+        -subj "/CN=zivpn" >/dev/null 2>&1 || true
+fi
+chmod 600 /etc/zivpn/zivpn.key 2>/dev/null || true
+chmod 644 /etc/zivpn/zivpn.crt 2>/dev/null || true
+cat > /etc/zivpn/config.json <<'ZVPJSON'
+{
+  "listen": ":5667",
+  "cert": "/etc/zivpn/zivpn.crt",
+  "key": "/etc/zivpn/zivpn.key",
+  "obfs": "zivpn",
+  "auth": { "mode": "passwords", "config": ["zivpn"] }
+}
+ZVPJSON
+if [[ -x /usr/local/bin/zivpn ]]; then
+cat > /etc/systemd/system/zivpn.service <<ZVPSVCEOF
+[Unit]
+Description=ZiVPN UDP Server (port 5667)
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/zivpn server -c /etc/zivpn/config.json
+Restart=always
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+ZVPSVCEOF
+fi
 # --- udpgw.service (badvpn UDP gateway :7300, fix UDPGW/badvpn) ---
 if [[ -x /usr/local/bin/udpgw ]]; then
 cat > /etc/systemd/system/udpgw.service <<UDPGWSVCEOF
@@ -10384,6 +10587,7 @@ IFACE=\$(ip route get 8.8.8.8 2>/dev/null | awk '{print \$5; exit}')
 iptables -t nat -F PREROUTING
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 5300 -j ACCEPT
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 53 -j REDIRECT --to-ports 5300
+iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 6000:19999 -j REDIRECT --to-ports 5667
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 1:65535 -j REDIRECT --to-ports 36712
 # FIX: izinkan INPUT UDP untuk 5300/53/36712 (chain INPUT beda dari NAT;
 # tanpa ini paket ke 36712 bisa diblok policy INPUT default-DROP)
@@ -10391,6 +10595,8 @@ iptables -C INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null || iptables -I INPU
 iptables -C INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 5300 -j ACCEPT
 iptables -C INPUT -p udp --dport 53 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 53 -j ACCEPT
 iptables -C INPUT -p udp --dport 7300 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 7300 -j ACCEPT
+iptables -C INPUT -p udp --dport 5667 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 5667 -j ACCEPT
+iptables -C INPUT -p udp --dport 6000:19999 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 6000:19999 -j ACCEPT
 iptables-save > /etc/iptables/rules.v4
 IPTEOF
 chmod +x /etc/iptables/apply-slowdns-udp.sh
@@ -10409,6 +10615,11 @@ WantedBy=multi-user.target
 IPTSVC
 systemctl daemon-reload
 systemctl enable --now slowdns udpgw iptables-restore >/dev/null 2>&1 || true
+if [[ -x /usr/local/bin/zivpn ]]; then
+    systemctl enable --now zivpn >/dev/null 2>&1 || true
+else
+    systemctl disable --now zivpn >/dev/null 2>&1 || true
+fi
 if [[ -x /usr/local/bin/udp-custom ]] && head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
     systemctl enable --now udp-custom >/dev/null 2>&1 || true
 else
@@ -10436,6 +10647,8 @@ ufw allow 25000/udp >/dev/null 2>&1 || true
 ufw allow 5300/udp >/dev/null 2>&1 || true
 ufw allow 5300/tcp >/dev/null 2>&1 || true
 ufw allow 36712/udp >/dev/null 2>&1 || true
+ufw allow 5667/udp >/dev/null 2>&1 || true
+ufw allow 6000:19999/udp >/dev/null 2>&1 || true
 ufw allow 7100:7600/tcp >/dev/null 2>&1 || true
 ufw allow 7300/tcp >/dev/null 2>&1 || true
 ufw allow 2096/tcp >/dev/null 2>&1 || true
@@ -10448,6 +10661,10 @@ systemctl daemon-reload
 systemctl unmask nginx dropbear xray >/dev/null 2>&1 || true
 systemctl enable --now dropbear xray vpn-ws-bridge vpn-proto-daemons nginx vpn-telegram-bot
 systemctl restart dropbear xray vpn-ws-bridge vpn-proto-daemons nginx vpn-telegram-bot
+if [[ -x /usr/local/bin/zivpn ]]; then
+    systemctl enable --now zivpn >/dev/null 2>&1 || true
+    systemctl restart zivpn >/dev/null 2>&1 || true
+fi
 chmod 700 /etc/vpn-bot 2>/dev/null || true
 chmod 600 /etc/vpn-bot/vpn_data.db 2>/dev/null || true
 
@@ -10461,6 +10678,10 @@ for srv in xray dropbear nginx vpn-ws-bridge vpn-proto-daemons vpn-telegram-bot;
     st=$(systemctl is-active "$srv" 2>/dev/null || echo dead)
     printf " %-24s : %s\n" "$srv" "$st"
 done
+if [[ -x /usr/local/bin/zivpn ]]; then
+    st=$(systemctl is-active zivpn 2>/dev/null || echo dead)
+    printf " %-24s : %s\n" "zivpn" "$st"
+fi
 echo "-----------------------------------------------------------------------"
 echo " SlowDNS VayDNS  : UDP/TCP 53 (vaydns multi-record: TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA)"
 if [[ -x /usr/local/bin/udp-custom ]] && head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
@@ -10499,8 +10720,6 @@ if __name__ == "__main__":
     if not ok_sent:
         print("Backup GAGAL terkirim ke Telegram setelah 3 percobaan.", file=sys.stderr)
         sys.exit(1)
-
-
 EOF_EMBED_FILE
 chmod +x /etc/vpn-bot/send_backup.py 2>/dev/null || true
 
