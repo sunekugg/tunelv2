@@ -10878,6 +10878,74 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOSVC
 
+# 6b. ZiVPN UDP Server (OPSIONAL - gagal unduh tidak menggagalkan instalasi)
+mkdir -p /etc/zivpn
+ZIVPN_OK=0
+if [[ ! -x /usr/local/bin/zivpn ]]; then
+    rm -f /usr/local/bin/zivpn
+    ZARCH=$(uname -m)
+    if [[ "$ZARCH" == "x86_64" ]]; then ZAR=amd64; elif [[ "$ZARCH" == "aarch64" ]]; then ZAR=arm64; else ZAR=""; fi
+    if [[ -n "$ZAR" ]]; then
+        for ZURL in \
+            "https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${ZAR}" \
+            "https://ghfast.top/https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${ZAR}" \
+            "https://gh-proxy.com/https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${ZAR}"; do
+            wget -qO /usr/local/bin/zivpn "$ZURL" 2>/dev/null || true
+            if [[ -s /usr/local/bin/zivpn ]] && head -c4 /usr/local/bin/zivpn 2>/dev/null | grep -q $'\x7fELF'; then
+                ZIVPN_OK=1; break
+            fi
+            rm -f /usr/local/bin/zivpn
+        done
+        chmod +x /usr/local/bin/zivpn 2>/dev/null || true
+    fi
+else
+    ZIVPN_OK=1
+fi
+if [[ "$ZIVPN_OK" == "1" ]]; then
+    if [[ ! -s /etc/zivpn/zivpn.crt ]] || [[ ! -s /etc/zivpn/zivpn.key ]]; then
+        openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+            -keyout /etc/zivpn/zivpn.key -out /etc/zivpn/zivpn.crt \
+            -subj "/CN=zivpn" >/dev/null 2>&1 || true
+    fi
+    chmod 600 /etc/zivpn/zivpn.key 2>/dev/null || true
+    chmod 644 /etc/zivpn/zivpn.crt 2>/dev/null || true
+    if [[ ! -s /etc/zivpn/config.json ]]; then
+        cat > /etc/zivpn/config.json <<'ZVPJSON'
+{
+  "listen": ":5667",
+  "cert": "/etc/zivpn/zivpn.crt",
+  "key": "/etc/zivpn/zivpn.key",
+  "obfs": "zivpn",
+  "auth": { "mode": "passwords", "config": ["zivpn"] }
+}
+ZVPJSON
+    fi
+    cat > /etc/systemd/system/zivpn.service <<'ZVPSVCEOF'
+[Unit]
+Description=ZiVPN UDP Server (port 5667)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/zivpn server -c /etc/zivpn/config.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+ZVPSVCEOF
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable zivpn >/dev/null 2>&1 || true
+    systemctl restart zivpn >/dev/null 2>&1 || true
+    for ZPT in 5667 6000:19999; do
+        iptables -C INPUT -p udp --dport "$ZPT" -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport "$ZPT" -j ACCEPT 2>/dev/null || true
+        iptables -t nat -C PREROUTING -p udp --dport "$ZPT" -j REDIRECT --to-ports 5667 2>/dev/null || iptables -t nat -I PREROUTING -p udp --dport "$ZPT" -j REDIRECT --to-ports 5667 2>/dev/null || true
+    done
+    netfilter-persistent save >/dev/null 2>&1 || true
+    iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+fi
+
 # 7. Pastikan Sertifikat SSL Tersedia (Sudah di-upload dari Master + Fallback lokal)
 if [[ ! -s /etc/xray/certs/fullchain.pem ]] || [[ ! -s /etc/xray/certs/privkey.pem ]]; then
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -batch \
