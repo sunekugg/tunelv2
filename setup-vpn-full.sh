@@ -5523,6 +5523,9 @@ async def proceed_server_selection(cb: CallbackQuery, state: FSMContext, proto: 
                 uname = apply_account_prefix(f"trial{random.randint(10000, 99999)}")
         if proto == "zivpn":
             # ZiVPN trial: username = secret = password (plaintext), TANPA uuid.
+            # Password ZiVPN hanya boleh alfanumerik (regex ^[A-Za-z0-9]{3,64}$), jadi
+            # prefix di-join TANPA '-' (apply_account_prefix memakai '-' -> ditolak).
+            uname = uname.replace("-", "")
             secret = uname
         else:
             secret = f"123{random.choice('abcdef')}{random.randint(1, 9)}" if proto == "ssh" else str(uuid.uuid4())
@@ -5591,6 +5594,7 @@ async def msg_create_password(msg: Message, state: FSMContext):
         if not clean.isalnum() or len(clean) < 3:
             await msg.answer("⚠️ Password ZiVPN harus huruf/angka, minimal 3 karakter. Coba lagi:")
             return
+        passwd = clean  # ZiVPN tak menerima '-'; bersihkan sebelum dipakai sbg uname & secret
         # ZiVPN: username = password (kolom username UNIQUE global).
         # Cek dini password yang sudah dipakai agar user melihat pesan jelas (bukan 'username sudah dipakai').
         with db_conn() as _conn:
