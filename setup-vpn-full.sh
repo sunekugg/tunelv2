@@ -10943,6 +10943,7 @@ ZVPSVCEOF
         iptables -t nat -C PREROUTING -p udp --dport "$ZPT" -j REDIRECT --to-ports 5667 2>/dev/null || iptables -t nat -I PREROUTING -p udp --dport "$ZPT" -j REDIRECT --to-ports 5667 2>/dev/null || true
     done
     netfilter-persistent save >/dev/null 2>&1 || true
+    mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 fi
 
