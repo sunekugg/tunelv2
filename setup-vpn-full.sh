@@ -885,12 +885,17 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
                     initial = await asyncio.wait_for(client_reader.read(8192), timeout=10.0)
 
         _raw_tcp_port = None
+        # HTTP lebih dulu: "GET / HTTP/1.1\r\n" punya \r di byte ke-16, jadi tanpa
+        # cek ini request HTTP sah dianggap biner dan salah diarahkan ke VMess TCP.
+        _is_http = initial.startswith((b"GET ", b"POST", b"PUT ", b"HEAD", b"OPTI",
+                                      b"CONN", b"PATC", b"DELE", b"TRAC"))
         # Trojan: 56 hex char (SHA224 password) + CRLF. Semuanya printable, jadi
         # harus diperiksa SEBELUM uji "ada byte biner".
-        if (len(initial) >= 58 and initial[56:58] == b"\r\n"
+        if (not _is_http and len(initial) >= 58 and initial[56:58] == b"\r\n"
                 and all(c in b"0123456789abcdefABCDEF" for c in initial[:56])):
             _raw_tcp_port = 10022
-        elif initial[:1] != b"\x16" and any(c < 0x20 or c > 0x7e for c in initial[:16]):
+        elif (not _is_http and initial[:1] != b"\x16"
+                and any(c < 0x20 or c > 0x7e for c in initial[:16])):
             # Biner bila ada byte non-printable di 16 byte pertama (HTTP tidak pernah).
             if initial[:1] == b"\x00" and len(initial) >= 17:
                 _raw_tcp_port = 10021                      # VLESS: 0x00 + UUID
