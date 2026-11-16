@@ -5530,7 +5530,7 @@ async def proceed_server_selection(cb: CallbackQuery, state: FSMContext, proto: 
     elif proto == "zivpn":
         # ZiVPN REGULER: 1 input saja berupa Password/Key (bukan username).
         # Username = password = secret (diisi di msg_create_password).
-        await state.update_data(proto="zivpn", is_trial=0, srv_id=srv_id, username="")
+        await state.update_data(proto="zivpn", is_trial=0, srv_id=srv_id)
         await state.set_state(FormState.create_password)
         await safe_edit_Basic(
             cb,
@@ -5591,6 +5591,12 @@ async def msg_create_password(msg: Message, state: FSMContext):
         if not clean.isalnum() or len(clean) < 3:
             await msg.answer("⚠️ Password ZiVPN harus huruf/angka, minimal 3 karakter. Coba lagi:")
             return
+        # ZiVPN: username = password (kolom username UNIQUE global).
+        # Cek dini password yang sudah dipakai agar user melihat pesan jelas (bukan 'username sudah dipakai').
+        with db_conn() as _conn:
+            if _conn.execute("SELECT 1 FROM accounts WHERE username=?", (passwd,)).fetchone():
+                await msg.answer("⚠️ Password ZiVPN ini sudah dipakai akun lain. Pakai password lain:")
+                return
     with db_conn() as conn:
         srv = conn.execute("SELECT * FROM servers WHERE id=?", (data["srv_id"],)).fetchone()
     await state.clear()
