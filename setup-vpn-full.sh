@@ -1604,10 +1604,11 @@ def format_ssh_html(host, user, passwd, bug_host="bug.com", ip_limit=2, exp_str=
         "OHP + SSH     : 9080\n"
         "Squid Proxy   : 3128\n"
         "BadVPN UDPGW  : 7100-7600\n"
-        "OpenVPN TCP   : 80,1194\n"
-        "OpenVPN SSL   : 443\n"
-        "OpenVPN UDP   : 25000\n"
-        "OpenVPN DNS   : 53\n"
+        # OpenVPN installer hanya menyediakan server UDP 1194 (blok
+        # "OpenVPN server minimal"). Port 443/80/25000/53 dibuka di firewall
+        # untuk dipakai lewat SSL/Stunnel/proxy di luar installer — jangan
+        # diiklankan sebagai siap pakai dari server ini.
+        "OpenVPN      : UDP 1194 (akun: ovpn-adduser)\n"
         "OHP + OVPN    : 9088\n"
         "————————————————————————————————————"
     )
@@ -10408,6 +10409,153 @@ SystemMaxFileSize=20M
 MaxRetentionSec=14day
 EOJRN
 systemctl restart systemd-journald 2>/dev/null || true
+
+# --- OpenVPN server minimal (UDP 1194) ---
+# Tujuan: fitur "OpenVPN TCP 80,1194 / SSL 443 / UDP 25000 / DNS 53" yang diiklankan
+# di banner & menu bot benar-benar tersedia. Server minimal: port UDP 1194 saja.
+# Akun dikelola lewat CLI `ovpn-adduser` / `ovpn-rmuser` (tanpa integrasi bot).
+if [[ -x /usr/sbin/openvpn ]] && [[ -d /usr/share/easy-rsa ]]; then
+    if [[ ! -s /etc/openvpn/server/ca.crt ]] || [[ ! -s /etc/openvpn/server/server.crt ]]; then
+        mkdir -p /etc/openvpn/server /etc/openvpn/client /var/log/openvpn
+        chmod 700 /etc/openvpn/client
+        rm -rf /etc/openvpn/pki-work
+        mkdir -p /etc/openvpn/pki-work
+        cp -r /usr/share/easy-rsa/. /etc/openvpn/pki-work/
+        cat > /etc/openvpn/pki-work/vars <<'EOVPKI'
+set_var EASYRSA_REQ_COUNTRY "ID"
+set_var EASYRSA_REQ_PROVINCE "JK"
+set_var EASYRSA_REQ_CITY "Jakarta"
+set_var EASYRSA_REQ_ORG "VPN"
+set_var EASYRSA_REQ_OU "VPN"
+set_var EASYRSA_KEY_SIZE 2048
+set_var EASYRSA_DIGEST "sha256"
+EOVPKI
+        ( cd /etc/openvpn/pki-work \
+            && ./easyrsa --batch init-pki >/dev/null 2>&1 \
+            && echo "yes" | ./easyrsa --batch --req-cn="server" build-ca nopass >/dev/null 2>&1 \
+            && ./easyrsa --batch --req-cn="server" gen-req server nopass >/dev/null 2>&1 \
+            && ./easyrsa --batch sign-req server server >/dev/null 2>&1 \
+            && ./easyrsa --batch gen-dh >/dev/null 2>&1 \
+            && openvpn --genkey secret pki/ta.key >/dev/null 2>&1 \
+            && ./easyrsa --batch gen-crl >/dev/null 2>&1 )
+        cp /etc/openvpn/pki-work/pki/ca.crt /etc/openvpn/server/ca.crt
+        cp /etc/openvpn/pki-work/pki/issued/server.crt /etc/openvpn/server/server.crt
+        cp /etc/openvpn/pki-work/pki/private/server.key /etc/openvpn/server/server.key
+        cp /etc/openvpn/pki-work/pki/dh.pem /etc/openvpn/server/dh.pem
+        cp /etc/openvpn/pki-work/pki/ta.key /etc/openvpn/server/ta.key
+        cp /etc/openvpn/pki-work/pki/crl.pem /etc/openvpn/server/crl.pem
+        chmod 600 /etc/openvpn/server/server.key /etc/openvpn/server/ta.key
+    fi
+    if [[ ! -s /etc/openvpn/server/server.conf ]]; then
+        cat > /etc/openvpn/server/server.conf <<'EOVCONF'
+# OpenVPN server minimal — UDP 1194
+# (TCP 1194 sudah dipakai proto-daemons.py untuk OHP, jangan bentrok.)
+port 1194
+proto udp
+dev tun0
+ca /etc/openvpn/server/ca.crt
+cert /etc/openvpn/server/server.crt
+key /etc/openvpn/server/server.key
+dh /etc/openvpn/server/dh.pem
+tls-auth /etc/openvpn/server/ta.key 0
+crl-verify /etc/openvpn/server/crl.pem
+topology subnet
+server 10.66.66.0 255.255.255.0
+ifconfig-pool-persist /var/log/openvpn/ipp.txt
+push "redirect-gateway def1 bypass-dhcp"
+push "dhcp-option DNS 1.1.1.1"
+push "dhcp-option DNS 8.8.8.8"
+keepalive 10 120
+cipher AES-256-GCM
+auth SHA256
+tls-version-min 1.2
+persist-key
+persist-tun
+status /var/log/openvpn/status.log
+log-append /var/log/openvpn/openvpn.log
+verb 3
+user nobody
+group nogroup
+EOVCONF
+    fi
+    # NAT + forward utk subnet OpenVPN (idempotent)
+    VPN_IF=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}'); [[ -z "$VPN_IF" ]] && VPN_IF="eth0"
+    iptables -C FORWARD -i tun0 -j ACCEPT 2>/dev/null || iptables -I FORWARD -i tun0 -j ACCEPT
+    iptables -t nat -C POSTROUTING -s 10.66.66.0/24 -o "$VPN_IF" -j MASQUERADE 2>/dev/null || iptables -t nat -I POSTROUTING -s 10.66.66.0/24 -o "$VPN_IF" -j MASQUERADE
+    mkdir -p /etc/iptables
+    iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+
+    # Helper CLI: buat & cabut akun OVPN
+    cat > /usr/local/bin/ovpn-adduser <<'EOVADD'
+#!/bin/bash
+# OpenVPN client .ovpn generator (minimal, tanpa integrasi bot)
+# Usage: ovpn-adduser <username>
+set -e
+[ -z "$1" ] && { echo "Usage: $0 <username>"; exit 1; }
+U="$1"
+SRV="${OVPN_HOST:-$(curl -s --max-time 4 ifconfig.me || hostname -I | awk '{print $1}')}"
+PORT="${OVPN_PORT:-1194}"
+CA=/etc/openvpn/server/ca.crt
+TA=/etc/openvpn/server/ta.key
+WORK=/etc/openvpn/client
+mkdir -p "$WORK" && chmod 700 "$WORK"
+cd /etc/openvpn/pki-work
+# EasyRSA v3: build-client-full <name> = CN otomatis = <name>. Jangan set --req-cn.
+./easyrsa --batch build-client-full "$U" nopass >/dev/null 2>&1
+CRT=$(cat pki/issued/$U.crt)
+KEY=$(cat pki/private/$U.key)
+CAB=$(cat "$CA")
+TAB=$(cat "$TA")
+cat > "$WORK/$U.ovpn" <<EOF
+client
+dev tun
+proto udp
+remote $SRV $PORT
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+verb 3
+cipher AES-256-GCM
+auth SHA256
+tls-version-min 1.2
+<ca>
+$CAB
+</ca>
+<cert>
+$CRT
+</cert>
+<key>
+$KEY
+</key>
+<tls-auth>
+$TAB
+</tls-auth>
+EOF
+chmod 600 "$WORK/$U.ovpn"
+echo "OK: $WORK/$U.ovpn"
+EOVADD
+    chmod +x /usr/local/bin/ovpn-adduser
+    cat > /usr/local/bin/ovpn-rmuser <<'EOVRM'
+#!/bin/bash
+# Cabut sertifikat klien & hapus .ovpn
+set -e
+[ -z "$1" ] && { echo "Usage: $0 <username>"; exit 1; }
+U="$1"
+cd /etc/openvpn/pki-work
+./easyrsa --batch revoke "$U" 2>&1 | tail -2
+./easyrsa --batch gen-crl >/dev/null
+cp pki/crl.pem /etc/openvpn/server/crl.pem
+systemctl restart openvpn-server@server
+rm -f /etc/openvpn/client/$U.ovpn
+echo "Revoked $U"
+EOVRM
+    chmod +x /usr/local/bin/ovpn-rmuser
+
+    systemctl daemon-reload
+    systemctl enable openvpn-server@server >/dev/null 2>&1 || true
+    systemctl restart openvpn-server@server 2>/dev/null || true
+fi
 
 # 6. Buat Virtualenv Python & Aktifkan Semua Layanan
 echo "[6/6] Menyiapkan Python Virtualenv & menyalakan seluruh layanan..."
