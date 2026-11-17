@@ -786,11 +786,28 @@ async def tls_prehop(reader: asyncio.StreamReader, writer: asyncio.StreamWriter)
         line = await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=10.0)
         parts = line.decode("latin-1", errors="ignore").split()
         real_ip = parts[2] if len(parts) >= 5 and parts[0] == "PROXY" else ""
+        # Klien SSL-VPN yang kirim banner SSH mentah (SSH-2.0-easyPro dst.)
+        # setelah PROXY header. Route langsung ke Dropbear 90, JANGAN lewat
+        # terminator TLS 10445 (yang hanya paham ClientHello).
+        peek = await reader.read(4)
+        if peek.startswith(b"SSH-"):
+            peek += await reader.read(8192)
+            b_reader, b_writer = await asyncio.open_connection("127.0.0.1", 90)
+            sockname = b_writer.get_extra_info("sockname")
+            lport = sockname[1] if sockname else 0
+            if lport and real_ip and not real_ip.startswith("127."):
+                record_port_ip(lport, real_ip, "ssh-ssl", peek)
+            b_writer.write(peek)
+            await b_writer.drain()
+            await asyncio.gather(raw_pipe(reader, b_writer), raw_pipe(b_reader, writer))
+            return
         b_reader, b_writer = await asyncio.open_connection("127.0.0.1", 10445)
         sockname = b_writer.get_extra_info("sockname")
         lport = sockname[1] if sockname else 0
         if lport and real_ip and not real_ip.startswith("127."):
             TLS_PREHOP[lport] = real_ip
+        b_writer.write(peek)
+        await b_writer.drain()
         await asyncio.gather(raw_pipe(reader, b_writer), raw_pipe(b_reader, writer))
     except Exception:
         pass
@@ -889,12 +906,16 @@ async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyn
         # cek ini request HTTP sah dianggap biner dan salah diarahkan ke VMess TCP.
         _is_http = initial.startswith((b"GET ", b"POST", b"PUT ", b"HEAD", b"OPTI",
                                       b"CONN", b"PATC", b"DELE", b"TRAC"))
+        # Banner SSH (SSH-2.0-*) juga teks, walau byte ke-16 bisa \r kalau ident
+        # klien pendek (mis. "SSH-2.0-easyPro\r\n" = 15 byte + CRLF). Tanpa ini
+        # koneksi salah diklasifikasi biner dan dilempar ke VMess TCP 10020.
+        _is_ssh = initial.startswith(b"SSH-")
         # Trojan: 56 hex char (SHA224 password) + CRLF. Semuanya printable, jadi
         # harus diperiksa SEBELUM uji "ada byte biner".
         if (not _is_http and len(initial) >= 58 and initial[56:58] == b"\r\n"
                 and all(c in b"0123456789abcdefABCDEF" for c in initial[:56])):
             _raw_tcp_port = 10022
-        elif (not _is_http and initial[:1] != b"\x16"
+        elif (not _is_http and not _is_ssh and initial[:1] != b"\x16"
                 and any(c < 0x20 or c > 0x7e for c in initial[:16])):
             # Biner bila ada byte non-printable di 16 byte pertama (HTTP tidak pernah).
             if initial[:1] == b"\x00" and len(initial) >= 17:
@@ -11060,6 +11081,7 @@ http {
         grpc_read_timeout 86400s;
         grpc_send_timeout 86400s;
 
+        error_page 418 = @probe_ok;
         location = /vmess { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
         location = /vless { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
         location = /trojan { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
@@ -11074,6 +11096,7 @@ http {
 
         # WebSocket + HTTP-Upgrade fallback ke WS-Bridge (SSH dan Xray WS/Upgrade)
         location / {
+            if ($http_upgrade = "") { return 418; }
             proxy_pass http://127.0.0.1:10015;
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
@@ -11084,6 +11107,10 @@ http {
             proxy_read_timeout 86400s;
             proxy_send_timeout 86400s;
             proxy_buffering off;
+        }
+
+        location @probe_ok {
+            return 204;
         }
     }
 }
@@ -11140,6 +11167,7 @@ http {
         location ^~ /ss-grpc/ { grpc_pass grpc://127.0.0.1:10011; }
 
         location / {
+            if ($http_upgrade = "") { return 204; }
             proxy_pass http://127.0.0.1:10015;
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
@@ -11282,6 +11310,7 @@ http {
         grpc_read_timeout 86400s;
         grpc_send_timeout 86400s;
 
+        error_page 418 = @probe_ok;
         location = /vmess { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
         location = /vless { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
         location = /trojan { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
@@ -11296,6 +11325,7 @@ http {
 
         # WebSocket + HTTP-Upgrade fallback ke WS-Bridge (SSH dan Xray WS/Upgrade)
         location / {
+            if ($http_upgrade = "") { return 418; }
             proxy_pass http://127.0.0.1:10015;
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
@@ -11306,6 +11336,10 @@ http {
             proxy_read_timeout 86400s;
             proxy_send_timeout 86400s;
             proxy_buffering off;
+        }
+
+        location @probe_ok {
+            return 204;
         }
     }
 }
