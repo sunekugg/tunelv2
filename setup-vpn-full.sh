@@ -2048,7 +2048,13 @@ def get_dashboard_stats():
     xray_st = svc_badge(["xray"])
     ssh_st = svc_badge(["ssh", "sshd"])
     db_st = svc_badge(["dropbear"])
-    hap_st = svc_badge(["haproxy", "vpn-ws-bridge"])
+    # Multiplexer sekarang = Nginx Stream (installer). HAProxy opsional, jangan
+    # digabung dgn vpn-ws-bridge (itu backend WS, bukan multiplexer) — sebelumnya
+    # bikin badge menampilkan "HAProxy aktif" walau binary haproxy tak terpasang.
+    hap_st = svc_badge(["haproxy"])
+    if hap_st != "🟢 Aktif":
+        ngx_st_probe = svc_badge(["nginx"])
+        hap_st = f"Nginx {ngx_st_probe.split()[-1]}" if ngx_st_probe == "🟢 Aktif" else "🔴 Mati"
     ngx_st = svc_badge(["nginx"])
     ssl_st, ssl_exp = get_ssl_info()
 
@@ -2695,8 +2701,12 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
             return False
         xray_ok = loc_act(["xray"])
         db_ok = loc_act(["dropbear"])
-        hap_ok = loc_act(["haproxy", "vpn-ws-bridge"])
+        # Multiplexer = HAProxy ATAU Nginx stream (installer pakai Nginx stream).
+        # Jangan gabungkan dgn vpn-ws-bridge: itu backend bukan multiplexer,
+        # sebelumnya bikin badge "HAProxy aktif" muncul walau HAProxy tak terpasang.
+        hap_ok = loc_act(["haproxy"])
         ngx_ok = loc_act(["nginx"])
+        ws_ok = loc_act(["vpn-ws-bridge"])
         zv_ok = loc_act(["zivpn"])
         ssl_ok = os.path.exists("/etc/xray/certs/fullchain.pem") and os.path.getsize("/etc/xray/certs/fullchain.pem") > 0
         return {
@@ -2704,7 +2714,8 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
             "ip": ip_addr,
             "xray": "🟢 Sudah Ada & Aktif" if xray_ok else "🔴 Belum Ada / Mati",
             "dropbear": "🟢 Sudah Ada & Aktif" if db_ok else "🔴 Belum Ada / Mati",
-            "haproxy": "🟢 Sudah Ada & Aktif" if hap_ok else "🔴 Belum Ada / Mati",
+            "multiplexer": ("🟢 Nginx Stream" if ngx_ok else "🟢 HAProxy" if hap_ok else "🔴 Belum Ada / Mati"),
+            "ws_bridge": "🟢 Sudah Ada & Aktif" if ws_ok else "🔴 Belum Ada / Mati",
             "nginx": "🟢 Sudah Ada / Aktif" if ngx_ok else "🔴 Belum Ada / Mati",
             "ssl": "🟢 Sudah Ada / Aktif" if ssl_ok else "🔴 Belum Ada / Kosong",
             "zivpn": "🟢 Sudah Ada & Aktif" if zv_ok else "⚪ Tidak Terpasang",
@@ -2740,7 +2751,9 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
             "ip": ip_addr,
             "xray": "🟢 Sudah Ada & Aktif" if xr == "active" else "🔴 Belum Ada / Mati",
             "dropbear": "🟢 Sudah Ada & Aktif" if db == "active" else "🔴 Belum Ada / Mati",
-            "haproxy": "🟢 Sudah Ada & Aktif" if (hp == "active" or ws == "active") else "🔴 Belum Ada / Mati",
+            # Multiplexer = HAProxy ATAU Nginx Stream. Tampilkan mana yang aktif.
+            "haproxy": ("🟢 HAProxy" if hp == "active" else "🟢 Nginx Stream" if nx == "active" else "🔴 Belum Ada / Mati"),
+            "ws_bridge": "🟢 Sudah Ada & Aktif" if ws == "active" else "🔴 Belum Ada / Mati",
             "nginx": "🟢 Sudah Ada / Aktif" if nx == "active" else "🔴 Belum Ada / Mati",
             "ssl": "🟢 Sudah Ada / Aktif" if ssl_st == "active" else "🔴 Belum Ada / Kosong",
             "zivpn": "🟢 Sudah Ada & Aktif" if zv == "active" else "⚪ Tidak Terpasang",
@@ -2753,6 +2766,7 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
             "xray": "⚪ Tidak Terhubung SSH",
             "dropbear": "⚪ Tidak Terhubung SSH",
             "haproxy": "⚪ Tidak Terhubung SSH",
+            "ws_bridge": "⚪ Tidak Terhubung SSH",
             "nginx": "⚪ Tidak Terhubung SSH",
             "ssl": "⚪ Tidak Terhubung SSH",
             "zivpn": "⚪ Tidak Terhubung SSH",
@@ -6789,7 +6803,8 @@ def build_component_check_screen(srv_row, temp_pass: str = None):
         "📦 <b>Status Layanan di VPS Tambahan Ini:</b>\n"
         f"• <b>Xray-Core:</b> {res['xray']}\n"
         f"• <b>Dropbear SSH:</b> {res['dropbear']}\n"
-        f"• <b>HAProxy Multiplexer:</b> {res['haproxy']}\n"
+        f"• <b>Multiplexer (HAProxy/Nginx):</b> {res['haproxy']}\n"
+        f"• <b>WS-Bridge Backend:</b> {res['ws_bridge']}\n"
         f"• <b>Nginx Web/gRPC:</b> {res['nginx']}\n"
         f"• <b>Sertifikat SSL:</b> {res['ssl']}\n\n"
         f"👇 <b>Silakan Pilih Tindakan untuk Server #{sid}:</b>\n"
@@ -6798,7 +6813,7 @@ def build_component_check_screen(srv_row, temp_pass: str = None):
     )
     kb_rows = [
         [InlineKeyboardButton(text="✅ Gunakan yg Sudah Ada (Tanpa Install)", callback_data=f"vps_use_existing:{sid}")],
-        [InlineKeyboardButton(text="🛠️ Install Xray, Dropbear, HAProxy & SSL", callback_data=f"vps_full_install:{sid}")],
+        [InlineKeyboardButton(text="🛠️ Install Xray, Dropbear, Nginx & SSL", callback_data=f"vps_full_install:{sid}")],
         [
             InlineKeyboardButton(text=f"🔄 Cek Ulang #{sid}", callback_data=f"vps_check:{sid}"),
             InlineKeyboardButton(text=f"✏️ Edit Login #{sid}", callback_data=f"vps_edit_login:{sid}")
@@ -10371,10 +10386,28 @@ WorkingDirectory=/etc/vpn-bot
 ExecStart=/etc/vpn-bot/venv/bin/python /etc/vpn-bot/bot.py
 Restart=always
 RestartSec=3
+# Batasi memori: bot pernah melelah 270MB RSS setelah berjalan 11 jam.
+# OOM-kill bersih + auto-restart lebih baik daripada biarkan bot menggerus
+# RAM host yang cuma 2GB.
+MemoryMax=512M
+MemoryHigh=384M
+MemoryAccounting=yes
 
 [Install]
 WantedBy=multi-user.target
 EOBOTSVC
+
+# Hardening journald: Storage=persistent + cap 100M agar tidak korup lagi
+# (pernah "truncated" karena penuh) dan tidak makan disk VPS kecil.
+mkdir -p /etc/systemd/journald.conf.d
+cat << 'EOJRN' > /etc/systemd/journald.conf.d/50-vpn.conf
+[Journal]
+Storage=persistent
+SystemMaxUse=100M
+SystemMaxFileSize=20M
+MaxRetentionSec=14day
+EOJRN
+systemctl restart systemd-journald 2>/dev/null || true
 
 # 6. Buat Virtualenv Python & Aktifkan Semua Layanan
 echo "[6/6] Menyiapkan Python Virtualenv & menyalakan seluruh layanan..."
@@ -11521,10 +11554,28 @@ WorkingDirectory=/etc/vpn-bot
 ExecStart=/etc/vpn-bot/venv/bin/python /etc/vpn-bot/bot.py
 Restart=always
 RestartSec=3
+# Batasi memori: bot pernah melelah 270MB RSS setelah berjalan 11 jam.
+# OOM-kill bersih + auto-restart lebih baik daripada biarkan bot menggerus
+# RAM host yang cuma 2GB.
+MemoryMax=512M
+MemoryHigh=384M
+MemoryAccounting=yes
 
 [Install]
 WantedBy=multi-user.target
 EOBOTSVC
+
+# Hardening journald: Storage=persistent + cap 100M agar tidak korup lagi
+# (pernah "truncated" karena penuh) dan tidak makan disk VPS kecil.
+mkdir -p /etc/systemd/journald.conf.d
+cat << 'EOJRN' > /etc/systemd/journald.conf.d/50-vpn.conf
+[Journal]
+Storage=persistent
+SystemMaxUse=100M
+SystemMaxFileSize=20M
+MaxRetentionSec=14day
+EOJRN
+systemctl restart systemd-journald 2>/dev/null || true
 
 # 6. Buat Virtualenv Python & Aktifkan Semua Layanan
 echo "[6/6] Menyiapkan Python Virtualenv & menyalakan seluruh layanan..."
