@@ -4232,6 +4232,7 @@ class FormState(StatesGroup):
     admin_add_admin_input = State()
     create_username = State()
     create_password = State()
+    create_days = State()
     admin_set_value = State()
     admin_edit_banner = State()
     admin_add_vps = State()
@@ -5422,8 +5423,8 @@ async def msg_create_username(msg: Message, state: FSMContext):
     else:
         with db_conn() as conn:
             srv = conn.execute("SELECT * FROM servers WHERE id=?", (data["srv_id"],)).fetchone()
-        await state.clear()
-        await finalize_account_creation(msg, msg.from_user, srv, data["proto"], uname, str(uuid.uuid4()), edit_mode=False)
+        await state.update_data(secret=str(uuid.uuid4()))
+        await _finalize_or_ask_days(msg, msg.from_user, state, srv, data["proto"], uname, str(uuid.uuid4()))
 
 @router.message(FormState.create_password)
 async def msg_create_password(msg: Message, state: FSMContext):
@@ -5431,10 +5432,45 @@ async def msg_create_password(msg: Message, state: FSMContext):
     data = await state.get_data()
     with db_conn() as conn:
         srv = conn.execute("SELECT * FROM servers WHERE id=?", (data["srv_id"],)).fetchone()
-    await state.clear()
-    await finalize_account_creation(msg, msg.from_user, srv, data.get("proto", "ssh"), data.get("username", passwd), passwd, edit_mode=False)
+    await state.update_data(secret=passwd)
+    await _finalize_or_ask_days(msg, msg.from_user, state, srv, data.get("proto", "ssh"), data.get("username", passwd), passwd)
 
-async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, uname: str, secret: str, edit_mode: bool = False):
+async def _finalize_or_ask_days(msg, tg_user, state, srv, proto, uname, secret, edit_mode=False):
+    """Admin -> tanya dulu masa aktif (hari). User biasa -> langsung pakai durasi default."""
+    if is_admin(tg_user.id):
+        await state.set_state(FormState.create_days)
+        await msg.answer(
+            "📅 <b>Masukkan masa aktif akun (hari)</b>\n"
+            "• Angka &gt; 0 = masa aktif berapa hari\n"
+            "• <code>0</code> = <b>Unlimited</b> (tanpa masa berlaku)",
+            parse_mode="HTML"
+        )
+        return
+    await state.clear()
+    await finalize_account_creation(msg, tg_user, srv, proto, uname, secret, edit_mode=edit_mode)
+
+
+@router.message(FormState.create_days)
+async def msg_create_days(msg: Message, state: FSMContext):
+    if msg.chat.id < 0:
+        return
+    raw = (msg.text or "").strip()
+    if not re.fullmatch(r"\d{1,5}", raw):
+        await msg.answer("⚠️ Masukkan angka hari yang valid (contoh: 30). Untuk unlimited isi 0:")
+        return
+    days = int(raw)
+    data = await state.get_data()
+    srv_id = data.get("srv_id")
+    with db_conn() as conn:
+        srv = conn.execute("SELECT * FROM servers WHERE id=?", (srv_id,)).fetchone()
+    await state.clear()
+    await finalize_account_creation(
+        msg, msg.from_user, srv, data.get("proto", "ssh"),
+        data.get("username", ""), data.get("secret", ""),
+        edit_mode=data.get("edit_mode", False), custom_days=days)
+
+
+async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, uname: str, secret: str, edit_mode: bool = False, custom_days: int | None = None):
     try:
         user_id = tg_user.id
         now = int(time.time())
@@ -5445,9 +5481,9 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
         srv_spd = srv["speed_mbps"] if ("speed_mbps" in srv.keys() and srv["speed_mbps"]) else 0
         speed_mbps = int(srv_spd) if int(srv_spd) > 0 else get_int_setting("default_speed_mbps", 0, 0)
 
-        # Fitur trial sudah dihapus — semua akun memakai durasi reguler.
-        days = get_int_setting("default_days", 7, 1)
-        exp_ts = now + (days * 86400)
+        # Admin bisa menentukan hari saat buat akun (0 = unlimited); selain itu pakai default.
+        days = int(custom_days) if custom_days is not None else get_int_setting("default_days", 7, 1)
+        exp_ts = now + (days * 86400) if days > 0 else 4102444800
         exp_display = datetime.fromtimestamp(exp_ts).strftime("%Y-%m-%d")
         exp_ssh_date = exp_display
 
