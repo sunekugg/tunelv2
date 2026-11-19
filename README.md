@@ -70,6 +70,16 @@ SSH/Dropbear (22, 90), port web Xray & Nginx (80, 443, 444, 8080, 8443, 2052, 20
 OpenVPN 1194/tcp, UDP-Custom 36712/udp, Squid 3128, dan rentang
 7100–7600/tcp, 7300/tcp, 6000–19999/udp untuk protokol UDP.
 
+## ZiVPN UDP (integrasi SSH)
+ZiVPN (:5667) dipasang otomatis dan NAT-redirect UDP 6000–19999 ke sana. **Tanpa
+menu terpisah** — username SSH otomatis jadi password ZiVPN:
+- Buat akun SSH → ditambahkan ke `/etc/zivpn/config.json` → restart zivpn
+- Hapus akun SSH / expired → dicabut dari config (array tak pernah kosong, minimal `zivpn`)
+- Aplikasi UDP ZiVPN di HP cukup isi **Host/Domain server** + **Username SSH** sebagai password
+- Output buat akun SSH tak berubah sama sekali
+
+Khusus VPS lokal (master). ZiVPN tak dikelola di VPS remote.
+
 ## Troubleshooting
 - **apt update gagal** — installer sudah menangani mirror internal provider yang mati
   (mis. mirrors.tencentyun.com → 169.254.0.3). Bila tetap gagal, cek DNS VPS.
