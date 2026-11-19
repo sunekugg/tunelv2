@@ -4431,7 +4431,7 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
             [make_copy_btn("📋 Salin UUID", secret, f"cp:{acc_id}:uuid")],
             [make_copy_btn("📋 Salin WS TLS", l_wstls, f"cp:{acc_id}:wstls"), make_copy_btn("📋 Salin WS No-TLS", l_wsntls, f"cp:{acc_id}:wsntls")],
             [make_copy_btn("📋 Salin gRPC", l_grpc, f"cp:{acc_id}:grpc"), make_copy_btn("📋 Salin Upgrade TLS", l_uptls, f"cp:{acc_id}:uptls")],
-            [make_copy_btn("📋 Salin Xhttp No-TLS", l_upntls, f"cp:{acc_id}:upntls")],
+            [make_copy_btn("📋 Salin Xhttp", l_upntls, f"cp:{acc_id}:upntls")],
             [make_copy_btn("🌐 Salin SlowDNS (NTLS)", l_wsntls, f"cp:{acc_id}:sdntls")]
         ])
     else:
