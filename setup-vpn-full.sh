@@ -1330,6 +1330,70 @@ def kill_ssh_sessions(username):
             if "dropbear" in cmdline:
                 run_argv(["kill", "-9", pid])
 
+# ================= ZiVPN UDP (integrasi SSH) =================
+ZIVPN_CONFIG = "/etc/zivpn/config.json"
+
+
+def _zivpn_restart():
+    """Restart service zivpn bila unit terpasang. Diam bila tak ada (remote/master)."""
+    try:
+        if run_cmd("systemctl cat zivpn >/dev/null 2>&1").returncode != 0:
+            return True
+        res = run_cmd("systemctl restart zivpn")
+        if res.returncode != 0:
+            res = run_argv(["systemctl", "restart", "zivpn"])
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+def zivpn_add_user(username: str) -> bool:
+    """Tambah username SSH sebagai password ZiVPN (unique, minimal sisa "zivpn").
+    Return False bila config ZiVPN tak ada (host tanpa ZiVPN) -> pemanggil abaikan."""
+    if not os.path.isfile(ZIVPN_CONFIG):
+        return False
+    try:
+        cfg = json.load(open(ZIVPN_CONFIG))
+        auth = cfg.setdefault("auth", {})
+        conf = auth.setdefault("config", ["zivpn"])
+        if not isinstance(conf, list):
+            return False
+        if username and username not in conf:
+            conf.append(username)
+        if "zivpn" not in conf:
+            conf.append("zivpn")
+        auth["config"] = sorted(set(conf))
+        atomic_write_json(ZIVPN_CONFIG, cfg)
+        _zivpn_restart()
+        return True
+    except Exception as e:
+        print(f"[zivpn] add_user gagal: {e}", file=sys.stderr)
+        return False
+
+
+def zivpn_remove_user(username: str) -> bool:
+    """Hapus username SSH dari config ZiVPN; jaga array tak pernah kosong."""
+    if not os.path.isfile(ZIVPN_CONFIG):
+        return False
+    try:
+        cfg = json.load(open(ZIVPN_CONFIG))
+        auth = cfg.get("auth") or {}
+        conf = auth.get("config")
+        if not isinstance(conf, list):
+            return True
+        new = [c for c in conf if c != username] or ["zivpn"]
+        if new == conf:
+            return True
+        auth["config"] = new
+        cfg["auth"] = auth
+        atomic_write_json(ZIVPN_CONFIG, cfg)
+        _zivpn_restart()
+        return True
+    except Exception as e:
+        print(f"[zivpn] remove_user gagal: {e}", file=sys.stderr)
+        return False
+
+
 def create_ssh_user(username, password, exp_date_str):
     safe_username(username)
     safe_secret(password)
@@ -1341,6 +1405,8 @@ def create_ssh_user(username, password, exp_date_str):
         return False
     p = subprocess.Popen(["chpasswd", "-c", "SHA512"], stdin=subprocess.PIPE, text=True)
     p.communicate(f"{username}:{password}\n")
+    # ZiVPN UDP: username SSH dipakai sebagai password ZiVPN (best-effort)
+    zivpn_add_user(username)
     return True
 
 
@@ -3316,6 +3382,8 @@ def delete_ssh_user(username: str):
     safe_username(username)
     kill_active_ssh_pids(username)
     run_argv(["userdel", "-f", username])
+    # ZiVPN UDP: cabut password ZiVPN milik user ini (best-effort)
+    zivpn_remove_user(username)
     return True
 
 
@@ -10564,6 +10632,46 @@ RestartSec=3
 WantedBy=multi-user.target
 UDPGWSVCEOF
 fi
+# --- ZiVPN UDP proxy (:5667) + cert self-signed 10 tahun ---
+mkdir -p /etc/zivpn
+ZAR="amd64"; case "$(uname -m)" in aarch64|arm64) ZAR="arm64";; esac
+_ZVURL="https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${ZAR}"
+wget -qO /usr/local/bin/zivpn "$_ZVURL" >/dev/null 2>&1 || \
+  wget -qO /usr/local/bin/zivpn "https://gh-proxy.com/$_ZVURL" >/dev/null 2>&1 || true
+chmod +x /usr/local/bin/zivpn 2>/dev/null || true
+if [[ ! -s /etc/zivpn/zivpn.key || ! -s /etc/zivpn/zivpn.crt ]]; then
+    openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
+        -subj "/C=ID/ST=Jakarta/L=Jakarta/O=VPN/CN=zivpn" \
+        -keyout /etc/zivpn/zivpn.key -out /etc/zivpn/zivpn.crt >/dev/null 2>&1 || true
+fi
+cat > /etc/zivpn/config.json <<'ZVJSON'
+{
+  "listen": ":5667",
+  "cert": "/etc/zivpn/zivpn.crt",
+  "key": "/etc/zivpn/zivpn.key",
+  "obfs": "zivpn",
+  "auth": { "mode": "passwords", "config": ["zivpn"] }
+}
+ZVJSON
+cat > /etc/systemd/system/zivpn.service <<'ZVSVC'
+[Unit]
+Description=ZiVPN UDP Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/etc/zivpn
+ExecStart=/usr/local/bin/zivpn server -c /etc/zivpn/config.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+ZVSVC
+systemctl daemon-reload
+systemctl enable --now zivpn >/dev/null 2>&1 || true
 # --- iptables NAT rules (urut agar 5300 & 53 aman dari catch-all) ---
 cat > /etc/iptables/apply-slowdns-udp.sh <<IPTEOF
 #!/bin/bash
@@ -10572,6 +10680,10 @@ IFACE=\$(ip route get 8.8.8.8 2>/dev/null | awk '{print \$5; exit}')
 iptables -t nat -F PREROUTING
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 5300 -j ACCEPT
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 53 -j REDIRECT --to-ports 5300
+# ZiVPN UDP: 6000:19999 -> :5667 (WAJIB sebelum catch-all 1:65535 -> 36712)
+iptables -C INPUT -p udp --dport 5667 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 5667 -j ACCEPT
+iptables -C INPUT -p udp --dport 6000:19999 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 6000:19999 -j ACCEPT
+iptables -C -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 6000:19999 -j REDIRECT --to-ports 5667 2>/dev/null || iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 6000:19999 -j REDIRECT --to-ports 5667
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 1:65535 -j REDIRECT --to-ports 36712
 # FIX: izinkan INPUT UDP untuk 5300/53/36712 (chain INPUT beda dari NAT;
 # tanpa ini paket ke 36712 bisa diblok policy INPUT default-DROP)
@@ -11591,6 +11703,10 @@ IFACE=\$(ip route get 8.8.8.8 2>/dev/null | awk '{print \$5; exit}')
 iptables -t nat -F PREROUTING
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 5300 -j ACCEPT
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 53 -j REDIRECT --to-ports 5300
+# ZiVPN UDP: 6000:19999 -> :5667 (WAJIB sebelum catch-all 1:65535 -> 36712)
+iptables -C INPUT -p udp --dport 5667 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 5667 -j ACCEPT
+iptables -C INPUT -p udp --dport 6000:19999 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 6000:19999 -j ACCEPT
+iptables -C -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 6000:19999 -j REDIRECT --to-ports 5667 2>/dev/null || iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 6000:19999 -j REDIRECT --to-ports 5667
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 1:65535 -j REDIRECT --to-ports 36712
 # FIX: izinkan INPUT UDP untuk 5300/53/36712 (chain INPUT beda dari NAT;
 # tanpa ini paket ke 36712 bisa diblok policy INPUT default-DROP)
