@@ -4701,6 +4701,8 @@ def get_theme_key() -> str:
     t_key = get_setting("bot_theme", "treebox")
     return t_key if t_key in THEMES_CATALOG else "treebox"
 
+init_db()  # tabel settings WAJIB ada sebelum migrasi baca get_setting()
+
 _migrate_old_theme()  # migrasi sekali di awal setelah get_setting tersedia
 
 def _migrate_trial_no_iplimit():
