@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 #  PORTABLE ONE-CLICK VPN & TELEGRAM BOT INSTALLER (FRESH VPS READY)
-#  Support: Ubuntu 18.04 - 24.04 & Debian 10 - 13 (Semua Spesifikasi RAM/CPU)
+#  Support: Ubuntu 20.04 - 24.04 & Debian 11 - 13 (Semua Spesifikasi RAM/CPU)
 #  Tanpa Hardcode Bot Token, Admin ID, atau Domain (Input Saat Install)
 # ==============================================================================
 set -e
@@ -9971,7 +9971,7 @@ def build_portable_installer():
         out.write("""#!/usr/bin/env bash
 # ==============================================================================
 #  PORTABLE ONE-CLICK VPN & TELEGRAM BOT INSTALLER (FRESH VPS READY)
-#  Support: Ubuntu 18.04 - 24.04 & Debian 10 - 13 (Semua Spesifikasi RAM/CPU)
+#  Support: Ubuntu 20.04 - 24.04 & Debian 11 - 13 (Semua Spesifikasi RAM/CPU)
 #  Tanpa Hardcode Bot Token, Admin ID, atau Domain (Input Saat Install)
 # ==============================================================================
 set -e
@@ -10461,6 +10461,9 @@ key /etc/openvpn/server/server.key
 dh /etc/openvpn/server/dh.pem
 tls-auth /etc/openvpn/server/ta.key 0
 crl-verify /etc/openvpn/server/crl.pem
+# Eksplisit: klien wajib sertifikat (default sebenarnya, tapi dinyatakan agar
+# perilaku sama di semua OpenVPN 2.4/2.5/2.6 pada Debian 11-13 & Ubuntu 20-24).
+verify-client-cert require
 topology subnet
 server 10.66.66.0 255.255.255.0
 ifconfig-pool-persist /var/log/openvpn/ipp.txt
@@ -10562,7 +10565,11 @@ fi
 # 6. Buat Virtualenv Python & Aktifkan Semua Layanan
 echo "[6/6] Menyiapkan Python Virtualenv & menyalakan seluruh layanan..."
 python3 -m venv /etc/vpn-bot/venv
-/etc/vpn-bot/venv/bin/pip install -U pip aiogram paramiko aiohttp >/dev/null
+# Pin aiogram <3.14: 3.14+ butuh Python >=3.9. Lantai OS target adalah
+# Ubuntu 20.04 (Python 3.8), jadi tanpa pin pip akan mengangkat aiogram terlalu
+# baru / tak cocok di 3.8. Kode memakai API 3.0 (Router/F/FSM/Command) yang
+# stabil, dan CopyTextButton sudah ada fallback ImportError.
+/etc/vpn-bot/venv/bin/pip install -U pip "aiogram>=3.0,<3.14" paramiko aiohttp >/dev/null
 
 IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
 [[ -z "$IFACE" ]] && IFACE="eth0"
@@ -11730,7 +11737,11 @@ systemctl restart systemd-journald 2>/dev/null || true
 # 6. Buat Virtualenv Python & Aktifkan Semua Layanan
 echo "[6/6] Menyiapkan Python Virtualenv & menyalakan seluruh layanan..."
 python3 -m venv /etc/vpn-bot/venv
-/etc/vpn-bot/venv/bin/pip install -U pip aiogram paramiko aiohttp >/dev/null
+# Pin aiogram <3.14: 3.14+ butuh Python >=3.9. Lantai OS target adalah
+# Ubuntu 20.04 (Python 3.8), jadi tanpa pin pip akan mengangkat aiogram terlalu
+# baru / tak cocok di 3.8. Kode memakai API 3.0 (Router/F/FSM/Command) yang
+# stabil, dan CopyTextButton sudah ada fallback ImportError.
+/etc/vpn-bot/venv/bin/pip install -U pip "aiogram>=3.0,<3.14" paramiko aiohttp >/dev/null
 
 IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
 [[ -z "$IFACE" ]] && IFACE="eth0"

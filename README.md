@@ -5,7 +5,7 @@ Nginx stream/HTTP, SlowDNS (VayDNS) + UDP-Custom, OpenVPN, ZiVPN, auto-SSL, dan
 bot Telegram sebagai panel kontrol.
 
 ## Fitur
-- Support Ubuntu 18.04–24.04 & Debian 10–13, RAM 512MB+
+- Support Ubuntu 20.04–24.04 & Debian 11–13, RAM 512MB+
 - Tanpa hardcode token/admin/domain — semua diminta saat install
 - Protokol: SSH/Dropbear, VMess, VLESS, Trojan, Shadowsocks, OpenVPN (UDP 1194), ZiVPN (UDP)
 - SlowDNS VayDNS (UDP/TCP 53) + UDP-Custom (UDP 36712)
