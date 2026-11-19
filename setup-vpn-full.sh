@@ -5423,7 +5423,7 @@ async def msg_create_username(msg: Message, state: FSMContext):
     else:
         with db_conn() as conn:
             srv = conn.execute("SELECT * FROM servers WHERE id=?", (data["srv_id"],)).fetchone()
-        await state.update_data(secret=str(uuid.uuid4()))
+        await state.update_data(username=uname, secret=str(uuid.uuid4()))
         await _finalize_or_ask_days(msg, msg.from_user, state, srv, data["proto"], uname, str(uuid.uuid4()))
 
 @router.message(FormState.create_password)
@@ -5433,7 +5433,8 @@ async def msg_create_password(msg: Message, state: FSMContext):
     with db_conn() as conn:
         srv = conn.execute("SELECT * FROM servers WHERE id=?", (data["srv_id"],)).fetchone()
     await state.update_data(secret=passwd)
-    await _finalize_or_ask_days(msg, msg.from_user, state, srv, data.get("proto", "ssh"), data.get("username", passwd), passwd)
+    await _finalize_or_ask_days(msg, msg.from_user, state, srv, data.get("proto", "ssh"),
+                                data.get("username") or "", passwd)
 
 async def _finalize_or_ask_days(msg, tg_user, state, srv, proto, uname, secret, edit_mode=False):
     """Admin -> tanya dulu masa aktif (hari). User biasa -> langsung pakai durasi default."""
@@ -5460,14 +5461,22 @@ async def msg_create_days(msg: Message, state: FSMContext):
         return
     days = int(raw)
     data = await state.get_data()
-    srv_id = data.get("srv_id")
+    uname = data.get("username") or ""
+    secret = data.get("secret") or ""
+    if not uname or not secret:
+        await msg.answer("⚠️ Sesi pembuatan akun kedaluwarsa. Silakan mulai dari menu Buat lagi.")
+        await state.clear()
+        return
     with db_conn() as conn:
-        srv = conn.execute("SELECT * FROM servers WHERE id=?", (srv_id,)).fetchone()
+        srv = conn.execute("SELECT * FROM servers WHERE id=?", (data.get("srv_id"),)).fetchone()
+    if not srv:
+        await msg.answer("⚠️ Server tidak ditemukan. Ulangi dari menu Buat.")
+        await state.clear()
+        return
     await state.clear()
     await finalize_account_creation(
         msg, msg.from_user, srv, data.get("proto", "ssh"),
-        data.get("username", ""), data.get("secret", ""),
-        edit_mode=data.get("edit_mode", False), custom_days=days)
+        uname, secret, edit_mode=data.get("edit_mode", False), custom_days=days)
 
 
 async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, uname: str, secret: str, edit_mode: bool = False, custom_days: int | None = None):
