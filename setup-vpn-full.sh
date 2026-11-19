@@ -1182,7 +1182,7 @@ async def main():
         except Exception:
             pass
     loop = asyncio.get_running_loop()
-    for up in (5300, 25000):
+    for up in (5300,):
         try:
             await loop.create_datagram_endpoint(lambda: DNSForwarderProtocol(), local_addr=("0.0.0.0", up))
         except Exception:
@@ -1207,7 +1207,6 @@ import shutil
 import subprocess
 import time
 
-ZIVPN_CONFIG = "/etc/zivpn/config.json"
 XRAY_CONFIG = "/etc/xray/config.json"
 XRAY_ACCESS_LOG = "/var/log/xray/access.log"
 DROPBEAR_LOG = "/var/log/dropbear.log"
@@ -1274,105 +1273,6 @@ def load_xray_config():
     with open(XRAY_CONFIG, "r") as f:
         return json.load(f)
 
-
-def load_zivpn_config():
-    """Baca /etc/zivpn/config.json. Raise FileNotFoundError bila belum ada."""
-    with open(ZIVPN_CONFIG, "r") as f:
-        return json.load(f)
-
-
-def save_zivpn_config(cfg):
-    """Simpan config ZiVPN secara atomik (sekali tulis, tak menyisakan file korup)."""
-    atomic_write_json(ZIVPN_CONFIG, cfg)
-
-
-def restart_zivpn():
-    """Restart service zivpn. Bila service belum terpasang (unit tak ada), anggap sukses
-    (config tetap tersimpan; restart akan dilakukan saat service nanti terpasang)."""
-    if run_cmd("systemctl cat zivpn >/dev/null 2>&1").returncode != 0:
-        return True
-    res = run_cmd("systemctl restart zivpn")
-    if res.returncode != 0:
-        res = run_argv(["systemctl", "restart", "zivpn"])
-    return res.returncode == 0
-
-
-_ZIVPN_PASS_RE = re.compile(r"^[A-Za-z0-9]{3,64}$")
-
-
-def add_zivpn_user(password, uuid_str=None):
-    """Tambah password plaintext ke auth.passwords ZiVPN. Return (ok, pesan).
-    Signature menerima uuid_str opsional utk kompatibilitas add_xray_user (uname=secret=password)."""
-    if not isinstance(password, str) or not _ZIVPN_PASS_RE.match(password):
-        return False, "Password ZiVPN harus huruf/angka, minimal 3 karakter."
-    if not os.path.exists(ZIVPN_CONFIG):
-        return False, "config zivpn belum ada"
-    try:
-        cfg = load_zivpn_config()
-    except Exception as e:
-        return False, f"Gagal baca config zivpn: {e}"
-    auth = cfg.setdefault("auth", {})
-    if auth.get("mode") != "passwords":
-        return False, "Config zivpn bukan mode 'passwords'."
-    conf = auth.get("config")
-    if not isinstance(conf, list):
-        return False, "Config zivpn 'auth.config' bukan list."
-    if password not in conf:
-        conf.append(password)
-    try:
-        save_zivpn_config(cfg)
-    except Exception as e:
-        return False, f"Gagal simpan config zivpn: {e}"
-    if not restart_zivpn():
-        return False, "Gagal restart service zivpn."
-    return True, f"Password ZiVPN {password} berhasil ditambahkan."
-
-
-def remove_zivpn_user(password):
-    """Hapus password dari auth.passwords ZiVPN. Array tak pernah dikosongkan (minimal 1 default 'zivpn')."""
-    if not os.path.exists(ZIVPN_CONFIG):
-        return False, "config zivpn belum ada"
-    try:
-        cfg = load_zivpn_config()
-    except Exception as e:
-        return False, f"Gagal baca config zivpn: {e}"
-    auth = cfg.get("auth") or {}
-    conf = auth.get("config")
-    if not isinstance(conf, list):
-        return True, "OK (auth.config bukan list, tidak ada yang dihapus)."
-    new_conf = [p for p in conf if p != password]
-    # JANGAN pernah kosongkan: sisakan minimal 1 default 'zivpn'
-    if not new_conf:
-        new_conf = ["zivpn"]
-    if new_conf == conf:
-        return True, "OK (password tidak ditemukan)."
-    auth["config"] = new_conf
-    cfg["auth"] = auth
-    try:
-        save_zivpn_config(cfg)
-    except Exception as e:
-        return False, f"Gagal simpan config zivpn: {e}"
-    restart_zivpn()
-    return True, f"Password ZiVPN {password} berhasil dihapus."
-
-
-def format_zivpn_output(password, domain, city, isp, exp_str):
-    """Return HTML box ZiVPN persis sesuai SPEK (Success + <pre><code> ┌│─└┘)."""
-    h = html.escape
-    label_w = 10  # pad label kiri agar rata: 'Host' -> 'Host' + 7 spasi = kolom 11 lalu ' : '
-    def _row(label, value):
-        return f"│ {label.ljust(label_w)} : {value}"
-    box = (
-        "CREATE AKUN ZIVPN\n"
-        "┌────────────────────────┐\n"
-        f"{_row('Host', h(domain))}\n"
-        f"{_row('CITY', h(city))}\n"
-        f"{_row('ISP', h(isp))}\n"
-        f"{_row('Pass', h(password))}\n"
-        f"{_row('Expire', h(exp_str))}\n"
-        "└────────────────────────┘"
-    )
-    return f"<b>Success:</b>\n<pre><code>{box}</code></pre>"
 
 def ensure_xray_stats(cfg):
     """Pastikan stats/api Xray ada DAN outbound 'api' di akhir (bukan default).
@@ -1447,8 +1347,6 @@ def create_ssh_user(username, password, exp_date_str):
 
 
 def add_xray_user(proto, username, uuid_str):
-    if proto == "zivpn":
-        return add_zivpn_user(username, uuid_str)
     safe_username(username)
     safe_secret(uuid_str)
     cfg = load_xray_config()
@@ -1466,8 +1364,6 @@ def add_xray_user(proto, username, uuid_str):
     return save_and_reload_xray(cfg)
 
 def remove_xray_user(proto, username):
-    if proto == "zivpn":
-        return remove_zivpn_user(username)
     safe_username(username)
     cfg = load_xray_config()
     changed = False
@@ -1605,7 +1501,7 @@ def format_ssh_html(host, user, passwd, bug_host="bug.com", ip_limit=2, exp_str=
         "Squid Proxy   : 3128\n"
         "BadVPN UDPGW  : 7100-7600\n"
         # OpenVPN installer hanya menyediakan server UDP 1194 (blok
-        # "OpenVPN server minimal"). Port 443/80/25000/53 dibuka di firewall
+        # "OpenVPN server minimal"). Port 443/80/53 dibuka di firewall
         # untuk dipakai lewat SSL/Stunnel/proxy di luar installer — jangan
         # diiklankan sebagai siap pakai dari server ini.
         "OpenVPN      : UDP 1194 (akun: ovpn-adduser)\n"
@@ -2647,9 +2543,6 @@ def create_remote_account(srv_row, proto: str, uname: str, secret: str, exp_ssh_
         q = sh_quote
         cmd = f"userdel -f {q(uname)} 2>/dev/null; useradd -e {exp_ssh_date} -s /bin/bash -d /tmp/{q(uname)} -m {q(uname)} && echo {q(uname + ':' + secret)} | chpasswd -c SHA512"
         exec_ssh_sync(ssh, cmd, timeout=10)
-    elif proto == "zivpn":
-        cmd = f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.add_zivpn_user({sh_quote(secret)})\""
-        exec_ssh_sync(ssh, cmd, timeout=10)
     else:
         cmd = f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.add_xray_user({sh_quote(proto)},{sh_quote(uname)},{sh_quote(secret)})\""
         exec_ssh_sync(ssh, cmd, timeout=10)
@@ -2660,8 +2553,6 @@ def remove_account_from_server(srv_row, proto: str, uname: str):
     if not srv_row or srv_row["is_local"] == 1:
         if proto == "ssh":
             delete_ssh_user(uname)
-        elif proto == "zivpn":
-            remove_zivpn_user(uname)
         else:
             remove_xray_user(proto, uname)
         return True
@@ -2669,8 +2560,6 @@ def remove_account_from_server(srv_row, proto: str, uname: str):
         ssh = connect_remote_ssh(srv_row, timeout=10)
         if proto == "ssh":
             exec_ssh_sync(ssh, f"pkill -9 -u {sh_quote(uname)} 2>/dev/null; userdel -f {sh_quote(uname)} 2>/dev/null", timeout=10)
-        elif proto == "zivpn":
-            exec_ssh_sync(ssh, f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.remove_zivpn_user({sh_quote(uname)})\"", timeout=10)
         else:
             exec_ssh_sync(ssh, f"python3 -c \"import sys; sys.path.append('/etc/vpn-bot'); import vpn_engine as e; e.remove_xray_user({sh_quote(proto)},{sh_quote(uname)})\"", timeout=10)
         ssh.close()
@@ -2682,9 +2571,6 @@ def add_account_to_server(srv_row, proto: str, uname: str, secret: str, exp_ssh_
     if not srv_row or srv_row["is_local"] == 1:
         if proto == "ssh":
             return create_ssh_user(uname, secret, exp_ssh_date)
-        elif proto == "zivpn":
-            ok, _ = add_zivpn_user(secret)
-            return ok
         else:
             ok, _ = add_xray_user(proto, uname, secret)
             return ok
@@ -2708,7 +2594,6 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
         hap_ok = loc_act(["haproxy"])
         ngx_ok = loc_act(["nginx"])
         ws_ok = loc_act(["vpn-ws-bridge"])
-        zv_ok = loc_act(["zivpn"])
         ssl_ok = os.path.exists("/etc/xray/certs/fullchain.pem") and os.path.getsize("/etc/xray/certs/fullchain.pem") > 0
         return {
             "ok": True,
@@ -2719,7 +2604,6 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
             "ws_bridge": "🟢 Sudah Ada & Aktif" if ws_ok else "🔴 Belum Ada / Mati",
             "nginx": "🟢 Sudah Ada / Aktif" if ngx_ok else "🔴 Belum Ada / Mati",
             "ssl": "🟢 Sudah Ada / Aktif" if ssl_ok else "🔴 Belum Ada / Kosong",
-            "zivpn": "🟢 Sudah Ada & Aktif" if zv_ok else "⚪ Tidak Terpasang",
         }
 
     try:
@@ -2731,8 +2615,7 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
             "systemctl is-active --quiet vpn-ws-bridge 2>/dev/null && ws=active || ws=no; "
             "systemctl is-active --quiet nginx 2>/dev/null && nx=active || nx=no; "
             "if [ -s /etc/xray/certs/fullchain.pem ] || [ -s /etc/xray/xray.crt ]; then ssl=active; else ssl=no; fi; "
-            "systemctl is-active --quiet zivpn 2>/dev/null && zv=active || zv=no; "
-            "echo RESULT:$xr:$db:$hp:$ws:$nx:$ssl:$zv"
+            "echo RESULT:$xr:$db:$hp:$ws:$nx:$ssl"
         )
         _, out_str, _ = exec_ssh_sync(ssh, check_sh, timeout=10)
         ssh.close()
@@ -2743,9 +2626,8 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
                 res_line = line.split("RESULT:", 1)[1].strip()
                 break
 
-        # Kompatibel dgn remote lama (yang belum echo $zv): default 'no' bila kurang.
-        parts = (res_line.split(":") + ["no"] * 7)[:7]
-        xr, db, hp, ws, nx, ssl_st, zv = [p.strip() for p in parts]
+        parts = (res_line.split(":") + ["no"] * 6)[:6]
+        xr, db, hp, ws, nx, ssl_st = [p.strip() for p in parts]
 
         return {
             "ok": True,
@@ -2757,7 +2639,6 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
             "ws_bridge": "🟢 Sudah Ada & Aktif" if ws == "active" else "🔴 Belum Ada / Mati",
             "nginx": "🟢 Sudah Ada / Aktif" if nx == "active" else "🔴 Belum Ada / Mati",
             "ssl": "🟢 Sudah Ada / Aktif" if ssl_st == "active" else "🔴 Belum Ada / Kosong",
-            "zivpn": "🟢 Sudah Ada & Aktif" if zv == "active" else "⚪ Tidak Terpasang",
         }
     except Exception as e:
         return {
@@ -2770,7 +2651,6 @@ def check_remote_vps_components(srv_row, temp_pass: str = None):
             "ws_bridge": "⚪ Tidak Terhubung SSH",
             "nginx": "⚪ Tidak Terhubung SSH",
             "ssl": "⚪ Tidak Terhubung SSH",
-            "zivpn": "⚪ Tidak Terhubung SSH",
         }
 
 def use_existing_remote_vps(srv_row):
@@ -4165,7 +4045,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, server_id INTEGER DEFAULT 1,
             protocol TEXT, username TEXT UNIQUE, secret TEXT, ip_limit INTEGER DEFAULT 2,
             quota_gb INTEGER DEFAULT 50, speed_mbps INTEGER DEFAULT 0, created_at INTEGER,
-            expired_at INTEGER, is_trial INTEGER DEFAULT 0, locked_until INTEGER DEFAULT 0,
+            expired_at INTEGER, locked_until INTEGER DEFAULT 0,
             strike_count INTEGER DEFAULT 0, violation_level INTEGER DEFAULT 0,
             last_ips TEXT DEFAULT '', active_sessions INTEGER DEFAULT 0,
             custom_bug TEXT DEFAULT '', bug_mode TEXT DEFAULT 'sni'
@@ -4176,7 +4056,7 @@ def init_db():
         );
         CREATE TABLE IF NOT EXISTS create_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, username TEXT,
-            protocol TEXT, is_trial INTEGER DEFAULT 0, created_at INTEGER
+            protocol TEXT, created_at INTEGER
         );
         CREATE TABLE IF NOT EXISTS detected_topics (
             chat_id INTEGER, thread_id INTEGER, chat_title TEXT, updated_at INTEGER,
@@ -4215,9 +4095,9 @@ def init_db():
             "welcome_text": "", "welcome_photo": "", "login_report_enabled": "0", "login_report_interval_min": "60", "login_topic_id": "0", "login_report_mask": "0", "login_report_show_ip": "1", "prefix_enabled": "1", "account_prefix": "sunek", "bot_theme": "treebox", "auto_heal_enabled": "1", "notif_server_status": "1",
             "bot_status": "1", "lock_enabled": "1", "lock_duration_min": "5",
             "lock_strikes": "1", "lock_tiered": "1", "default_days": "7",
-            "trial_minutes": "30", "default_ip_limit": "0", "default_quota_gb": "50",
+            "default_ip_limit": "0", "default_quota_gb": "50",
             "default_speed_mbps": "0", "max_users_per_vps": "100", "user_create_max": "1",
-            "user_create_days": "3", "trial_create_max": "3", "notif_create_group": "1",
+            "user_create_days": "3", "notif_create_group": "1",
             "force_join_chat": "", "force_join_link": "", "group_chat_id": "", "group_topic_id": "0",
             "create_topic_id": "0", "bug_host": "v.whatsapp.net",
             "sub_host": "", "feat_smart_sub": "1"
@@ -4326,40 +4206,27 @@ def check_user_access(user_id: int):
             return False, "⛔ ID Telegram Anda telah diblokir (Banned) oleh Admin."
     return True, ""
 
-def check_user_create_quota(user_id: int, is_trial: int):
+def check_user_create_quota(user_id: int):
     if user_id == ADMIN_ID:
         return True, ""
     now = int(time.time())
     with db_conn() as conn:
         u = conn.execute("SELECT custom_max_create FROM users WHERE user_id=?", (user_id,)).fetchone()
         custom_max = u["custom_max_create"] if u else -1
-        if is_trial == 1:
-            t_max = get_int_setting("trial_create_max", 3, 0)
-            if t_max <= 0:
-                return True, ""
-            since = now - 86400
-            rows = conn.execute(
-                "SELECT created_at FROM create_history WHERE user_id=? AND is_trial=1 AND created_at >= ? ORDER BY created_at ASC",
-                (user_id, since)
-            ).fetchall()
-            if len(rows) >= t_max:
-                next_str = datetime.fromtimestamp(rows[0]["created_at"] + 86400).strftime("%d/%m/%Y %H:%M WIB")
-                return False, f"⛔ Batas Trial tercapai ({len(rows)}/{t_max}x per hari). Bisa buat lagi pada {next_str}."
+        # Fitur trial sudah dihapus; semua akun lewat jalur reguler.
+        u_max = custom_max if custom_max >= 0 else get_int_setting("user_create_max", 1, 0)
+        u_days = get_int_setting("user_create_days", 3, 1)
+        if u_max <= 0:
             return True, ""
-        else:
-            u_max = custom_max if custom_max >= 0 else get_int_setting("user_create_max", 1, 0)
-            u_days = get_int_setting("user_create_days", 3, 1)
-            if u_max <= 0:
-                return True, ""
-            window_sec = u_days * 86400
-            rows = conn.execute(
-                "SELECT created_at FROM create_history WHERE user_id=? AND is_trial=0 AND created_at >= ? ORDER BY created_at ASC",
-                (user_id, now - window_sec)
-            ).fetchall()
-            if len(rows) >= u_max:
-                next_str = datetime.fromtimestamp(rows[0]["created_at"] + window_sec).strftime("%d/%m/%Y %H:%M WIB")
-                return False, f"⛔ Batas buat akun tercapai ({u_max}x dalam {u_days} hari).\nBisa buat lagi pada: {next_str}"
-            return True, ""
+        window_sec = u_days * 86400
+        rows = conn.execute(
+            "SELECT created_at FROM create_history WHERE user_id=? AND created_at >= ? ORDER BY created_at ASC",
+            (user_id, now - window_sec)
+        ).fetchall()
+        if len(rows) >= u_max:
+            next_str = datetime.fromtimestamp(rows[0]["created_at"] + window_sec).strftime("%d/%m/%Y %H:%M WIB")
+            return False, f"⛔ Batas buat akun tercapai ({u_max}x dalam {u_days} hari).\nBisa buat lagi pada: {next_str}"
+        return True, ""
 
 class FormState(StatesGroup):
     admin_add_admin_input = State()
@@ -4457,11 +4324,7 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
     host, city, isp = srv_row["host"], srv_row["city"], srv_row["isp"]
     bug_host = get_setting("bug_host", "bug.com")
 
-    if acc_row["is_trial"] == 1:
-        rem_min = max(1, int((acc_row["expired_at"] - acc_row["created_at"]) / 60))
-        exp_display = f"{rem_min} Menit"
-    else:
-        exp_display = datetime.fromtimestamp(acc_row["expired_at"]).strftime("%Y-%m-%d")
+    exp_display = datetime.fromtimestamp(acc_row["expired_at"]).strftime("%Y-%m-%d")
 
     kb_rows = []
     if proto == "ssh":
@@ -4502,13 +4365,6 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
             [make_copy_btn("📋 Salin Upgrade No-TLS", l_upntls, f"cp:{acc_id}:upntls")],
             [make_copy_btn("🌐 Salin SlowDNS (NTLS)", l_wsntls, f"cp:{acc_id}:sdntls")]
         ])
-    elif proto == "zivpn":
-        # ZiVPN: password/secret = key plaintext. Expire format '%d %B %Y %H:%M' (contoh 09 February 2026 11:57).
-        exp_str = datetime.fromtimestamp(acc_row["expired_at"]).strftime("%d %B %Y %H:%M")
-        out_html = engine.format_zivpn_output(secret, host, city, isp, exp_str)
-        kb_rows.append([
-            InlineKeyboardButton(text="🌐 Pindah Server", callback_data=f"move_srv_menu:{acc_id}")
-        ])
     else:
         out_html = engine.format_trojan_html(uname, city, isp, host, secret, exp_display, ip_limit=ip_limit) + _slowdns_info_block(host)
         l_wstls = f"trojan://{secret}@{host}:443?path=/trojan&security=tls&host={host}&type=ws&sni={host}#{uname}"
@@ -4535,7 +4391,6 @@ def build_server_rules_text(user_id: int) -> str:
     c_max = get_int_setting("user_create_max", 1, 0)
     c_days = get_int_setting("user_create_days", 3, 1)
     reg_days = get_int_setting("default_days", 1, 0)
-    trl_mins = get_int_setting("trial_minutes", 30, 1)
     q_gb = get_int_setting("default_quota_gb", 0, 0)
     s_mbps = get_int_setting("default_speed_mbps", 0, 0)
     ip_lim = get_int_setting("default_ip_limit", 2, 0)
@@ -4545,7 +4400,7 @@ def build_server_rules_text(user_id: int) -> str:
         u = conn.execute("SELECT custom_max_create FROM users WHERE user_id=?", (user_id,)).fetchone()
         custom_max = u["custom_max_create"] if u and u["custom_max_create"] is not None else -1
         used_cnt = conn.execute(
-            "SELECT COUNT(*) as c FROM create_history WHERE user_id=? AND is_trial=0 AND created_at >= ?",
+            "SELECT COUNT(*) as c FROM create_history WHERE user_id=? AND created_at >= ?",
             (user_id, now - (c_days * 86400))
         ).fetchone()["c"]
 
@@ -4564,8 +4419,7 @@ def build_server_rules_text(user_id: int) -> str:
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "📜 <b>ATURAN &amp; KETENTUAN SERVER</b>\n"
         f"• <b>Jatah Buat Akun:</b> {jatah_str}\n"
-        f"• <b>Masa Aktif Reguler:</b> {reg_lbl} | <b>Trial:</b> {trl_mins} Menit\n"
-        f"• <b>Kuota Bandwidth:</b> {bw_lbl} | <b>Speed Limit:</b> {spd_lbl}\n"
+        f"• <b>Masa Aktif:</b> {reg_lbl}\n"        f"• <b>Kuota Bandwidth:</b> {bw_lbl} | <b>Speed Limit:</b> {spd_lbl}\n"
         f"• <b>Batas Login (Limit IP):</b> {ip_lbl}\n"
         f"• <b>Sanksi Multi-Login:</b> Auto-Lock {lock_dur} Menit (Maks 3x Pelanggaran)\n"
         "• <b>Larangan Keras:</b> Dilarang Torrent, DDoS, Spamming &amp; Multi-Login!"
@@ -4675,7 +4529,6 @@ THEMES_CATALOG = {
         "line": "━━━━━━━━━━━━━━━━━━━━━━━━",
         "bullet": "├",
         "btn_create": "🌳 Buat",
-        "btn_trial": "🆓 Trial",
     },
     "minimal": {
         "name": "Minimalist Expandable Card",
@@ -4684,7 +4537,6 @@ THEMES_CATALOG = {
         "line": "────────────────────────────",
         "bullet": "•",
         "btn_create": "✨ Buat",
-        "btn_trial": "🆓 Trial",
     },
     "classic": {
         "name": "Classic Clean",
@@ -4693,7 +4545,6 @@ THEMES_CATALOG = {
         "line": "----------------------------",
         "bullet": "-",
         "btn_create": "📋 Buat",
-        "btn_trial": "🆓 Trial",
     },
 }
 
@@ -4704,17 +4555,6 @@ def get_theme_key() -> str:
 init_db()  # tabel settings WAJIB ada sebelum migrasi baca get_setting()
 
 _migrate_old_theme()  # migrasi sekali di awal setelah get_setting tersedia
-
-def _migrate_trial_no_iplimit():
-    """Akun trial lama mungkin terlanjur punya ip_limit>0 — nolkan sekali."""
-    try:
-        with db_conn() as conn:
-            conn.execute("UPDATE accounts SET ip_limit=0 WHERE is_trial=1 AND ip_limit>0")
-            conn.commit()
-    except Exception:
-        pass
-
-_migrate_trial_no_iplimit()
 
 def get_active_theme() -> dict:
     return THEMES_CATALOG[get_theme_key()]
@@ -4860,9 +4700,8 @@ def build_welcome_text(user_id: int) -> str:
 
 def main_menu_kb(user_id: int):
     th = get_active_theme()
-    t_lbl = th["btn_trial"]
     # Ikon khusus per protokol (tetap memakai label teks dari tema aktif)
-    icons = {"ssh": "⚖️", "vmess": "📡", "vless": "🖥", "trojan": "🔊", "zivpn": "🛡"}
+    icons = {"ssh": "⚖️", "vmess": "📡", "vless": "🖥", "trojan": "🔊"}
     c_btn = {p: f"{icons[p]} {th['btn_create'].split(' ',1)[1].strip()} {p.upper()}" for p in icons}
     buttons = [
         [
@@ -4872,18 +4711,6 @@ def main_menu_kb(user_id: int):
         [
             InlineKeyboardButton(text=c_btn["vless"], callback_data="create:vless:0"),
             InlineKeyboardButton(text=c_btn["trojan"], callback_data="create:trojan:0")
-        ],
-        [
-            InlineKeyboardButton(text=f"{t_lbl} SSH", callback_data="create:ssh:1"),
-            InlineKeyboardButton(text=f"{t_lbl} VMess", callback_data="create:vmess:1")
-        ],
-        [
-            InlineKeyboardButton(text=f"{t_lbl} VLESS", callback_data="create:vless:1"),
-            InlineKeyboardButton(text=f"{t_lbl} Trojan", callback_data="create:trojan:1")
-        ],
-        [
-            InlineKeyboardButton(text="🛡 Buat ZiVPN", callback_data="create:zivpn:0"),
-            InlineKeyboardButton(text="🛡 Trial ZiVPN", callback_data="create:zivpn:1")
         ],
         [
             InlineKeyboardButton(text="🔍 Cek Status Bug / Host ISP", callback_data="bug_scanner_start")
@@ -5237,7 +5064,7 @@ def mandiri_kb(acc):
     else:
         rows.append([InlineKeyboardButton(text="🌐 Pindah Server", callback_data=f"move_srv_menu:{aid}")])
     rows.append([InlineKeyboardButton(text="📄 Lihat Config", callback_data=f"view_my:{aid}")] +
-                ([] if proto in ("ssh", "zivpn") else
+                ([] if proto == "ssh" else
                  [InlineKeyboardButton(text="🎯 Inject Bug / Clash", callback_data=f"inj_menu:{aid}")]))
     if proto in ("vmess", "vless", "trojan"):
         rows.append([InlineKeyboardButton(text="🔗 Smart Subscription", callback_data=f"inj_extra:{aid}:sub")])
@@ -5477,9 +5304,8 @@ async def cb_create_start(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Salah satu akun Anda sedang TERKUNCI karena multi-login.", show_alert=True)
         return
 
-    _, proto, is_trial_str = cb.data.split(":")
-    is_trial = int(is_trial_str)
-    q_ok, q_msg = check_user_create_quota(cb.from_user.id, is_trial)
+    _, proto = cb.data.split(":")[:2]
+    q_ok, q_msg = check_user_create_quota(cb.from_user.id)
     if not q_ok:
         await cb.answer(q_msg, show_alert=True)
         return
@@ -5500,7 +5326,7 @@ async def cb_create_start(cb: CallbackQuery, state: FSMContext):
             return
         if len(live) == 1:
             # Cuma satu yang hidup — langsung buat di situ, tak perlu user memilih
-            await proceed_server_selection(cb, state, proto, is_trial, live[0]["id"])
+            await proceed_server_selection(cb, state, proto, live[0]["id"])
             return
         kb = []
         for s in servers:
@@ -5516,7 +5342,7 @@ async def cb_create_start(cb: CallbackQuery, state: FSMContext):
             max_u = s["max_users"] if ("max_users" in s.keys() and s["max_users"]) else get_int_setting("max_users_per_vps", 100, 1)
             kb.append([InlineKeyboardButton(
                 text=f"🟢 {engine.server_label(s)} — {cnt}/{max_u}",
-                callback_data=f"pick_srv:{proto}:{is_trial}:{s['id']}"
+                callback_data=f"pick_srv:{proto}:{s['id']}"
             )])
         kb.append([InlineKeyboardButton(text="⬅️ Batal", callback_data="back_home")])
         await safe_edit_Basic(
@@ -5525,14 +5351,14 @@ async def cb_create_start(cb: CallbackQuery, state: FSMContext):
             parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
         )
         return
-    await proceed_server_selection(cb, state, proto, is_trial, servers[0]["id"])
+    await proceed_server_selection(cb, state, proto, servers[0]["id"])
 
 @router.callback_query(F.data.startswith("pick_srv:"))
 async def cb_pick_srv(cb: CallbackQuery, state: FSMContext):
-    _, proto, is_trial_str, srv_id_str = cb.data.split(":")
-    await proceed_server_selection(cb, state, proto, int(is_trial_str), int(srv_id_str))
+    _, proto, srv_id_str = cb.data.split(":")
+    await proceed_server_selection(cb, state, proto, int(srv_id_str))
 
-async def proceed_server_selection(cb: CallbackQuery, state: FSMContext, proto: str, is_trial: int, srv_id: int):
+async def proceed_server_selection(cb: CallbackQuery, state: FSMContext, proto: str, srv_id: int):
     with db_conn() as conn:
         srv = conn.execute("SELECT * FROM servers WHERE id=?", (srv_id,)).fetchone()
         cnt = conn.execute("SELECT COUNT(*) as c FROM accounts WHERE server_id=? AND expired_at > ?", (srv_id, int(time.time()))).fetchone()["c"]
@@ -5553,40 +5379,17 @@ async def proceed_server_selection(cb: CallbackQuery, state: FSMContext, proto: 
         await cb.answer(f"Server penuh ({cnt}/{max_u} akun aktif). Pilih server lain.", show_alert=True)
         return
 
-    if is_trial == 1:
-        await cb.answer("⏳ Membuat akun Trial...")
-        uname = apply_account_prefix(f"trial{random.randint(10000, 99999)}")
-        with db_conn() as conn:
-            while conn.execute("SELECT 1 FROM accounts WHERE username=?", (uname,)).fetchone():
-                uname = apply_account_prefix(f"trial{random.randint(10000, 99999)}")
-        if proto == "zivpn":
-            # ZiVPN trial: username = secret = password (plaintext), TANPA uuid.
-            # Password ZiVPN hanya boleh alfanumerik (regex ^[A-Za-z0-9]{3,64}$), jadi
-            # prefix di-join TANPA '-' (apply_account_prefix memakai '-' -> ditolak).
-            uname = uname.replace("-", "")
-            secret = uname
-        else:
-            secret = f"123{random.choice('abcdef')}{random.randint(1, 9)}" if proto == "ssh" else str(uuid.uuid4())
-        await finalize_account_creation(cb.message, cb.from_user, srv, proto, uname, secret, is_trial=1, edit_mode=True)
-    elif proto == "zivpn":
-        # ZiVPN REGULER: 1 input saja berupa Password/Key (bukan username).
-        # Username = password = secret (diisi di msg_create_password).
-        await state.update_data(proto="zivpn", is_trial=0, srv_id=srv_id)
-        await state.set_state(FormState.create_password)
-        await safe_edit_Basic(
-            cb,
-            "<b>Buat Akun ZiVPN</b>\n────────────────────────────\n"
-            "🔑 Masukkan <b>Password / Key</b> ZiVPN (huruf/angka, min 3 karakter):",
-            parse_mode="HTML"
-        )
-    else:
-        await state.update_data(proto=proto, is_trial=0, srv_id=srv_id)
-        await state.set_state(FormState.create_username)
-        pfx_note = ""
-        if get_setting("prefix_enabled", "1") == "1":
-            pfx_str = get_setting("account_prefix", "sunek").strip().strip("-") or "sunek"
-            pfx_note = f"\n🏷️ <i>Otomatis ditambahkan prefix <code>{html.escape(pfx_str)}-</code> di depan nama akun Anda.</i>"
-        await safe_edit_Basic(
+    # Fitur trial & protokol ZiVPN sudah dihapus.
+    if proto == "zivpn":
+        await cb.answer("Protokol ZiVPN sudah dihapus.", show_alert=True)
+        return
+    await state.update_data(proto=proto, srv_id=srv_id)
+    await state.set_state(FormState.create_username)
+    pfx_note = ""
+    if get_setting("prefix_enabled", "1") == "1":
+        pfx_str = get_setting("account_prefix", "sunek").strip().strip("-") or "sunek"
+        pfx_note = f"\n🏷️ <i>Otomatis ditambahkan prefix <code>{html.escape(pfx_str)}-</code> di depan nama akun Anda.</i>"
+    await safe_edit_Basic(
             cb,
             f"<b>Buat Akun {proto.upper()}</b>\n────────────────────────────\n"
             f"Masukkan <b>Username / Remarks</b> (huruf/angka, 3-14 karakter):{pfx_note}",
@@ -5620,60 +5423,38 @@ async def msg_create_username(msg: Message, state: FSMContext):
         with db_conn() as conn:
             srv = conn.execute("SELECT * FROM servers WHERE id=?", (data["srv_id"],)).fetchone()
         await state.clear()
-        await finalize_account_creation(msg, msg.from_user, srv, data["proto"], uname, str(uuid.uuid4()), is_trial=0, edit_mode=False)
+        await finalize_account_creation(msg, msg.from_user, srv, data["proto"], uname, str(uuid.uuid4()), edit_mode=False)
 
 @router.message(FormState.create_password)
 async def msg_create_password(msg: Message, state: FSMContext):
     passwd = msg.text.strip()
     data = await state.get_data()
-    # Validasi password ZiVPN (huruf/angka, min 3) — hanya utk proto zivpn.
-    if data.get("proto") == "zivpn":
-        clean = passwd.replace("-", "")
-        if not clean.isalnum() or len(clean) < 3:
-            await msg.answer("⚠️ Password ZiVPN harus huruf/angka, minimal 3 karakter. Coba lagi:")
-            return
-        passwd = clean  # ZiVPN tak menerima '-'; bersihkan sebelum dipakai sbg uname & secret
-        # ZiVPN: username = password (kolom username UNIQUE global).
-        # Cek dini password yang sudah dipakai agar user melihat pesan jelas (bukan 'username sudah dipakai').
-        with db_conn() as _conn:
-            if _conn.execute("SELECT 1 FROM accounts WHERE username=?", (passwd,)).fetchone():
-                await msg.answer("⚠️ Password ZiVPN ini sudah dipakai akun lain. Pakai password lain:")
-                return
     with db_conn() as conn:
         srv = conn.execute("SELECT * FROM servers WHERE id=?", (data["srv_id"],)).fetchone()
     await state.clear()
-    await finalize_account_creation(msg, msg.from_user, srv, data.get("proto", "ssh"), data.get("username", passwd), passwd, is_trial=0, edit_mode=False)
+    await finalize_account_creation(msg, msg.from_user, srv, data.get("proto", "ssh"), data.get("username", passwd), passwd, edit_mode=False)
 
-async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, uname: str, secret: str, is_trial: int, edit_mode: bool = False):
+async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, uname: str, secret: str, edit_mode: bool = False):
     try:
         user_id = tg_user.id
         now = int(time.time())
         ip_limit = get_int_setting("default_ip_limit", 2, 0)
-        # Akun TRIAL tidak pernah kena limit IP. Limit IP hanya untuk akun reguler.
-        if is_trial:
-            ip_limit = 0
+        # Fitur trial sudah dihapus; semua akun memakai limit IP reguler.
         quota_gb = get_int_setting("default_quota_gb", 50, 0)
         # Akun baru mewarisi speed VPS tujuan; fallback ke default global
         srv_spd = srv["speed_mbps"] if ("speed_mbps" in srv.keys() and srv["speed_mbps"]) else 0
         speed_mbps = int(srv_spd) if int(srv_spd) > 0 else get_int_setting("default_speed_mbps", 0, 0)
 
-        if is_trial:
-            t_min = get_int_setting("trial_minutes", 30, 1)
-            exp_ts = now + (t_min * 60)
-            exp_display = f"{t_min} Menit"
-            exp_ssh_date = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
-        else:
-            days = get_int_setting("default_days", 7, 1)
-            exp_ts = now + (days * 86400)
-            exp_display = datetime.fromtimestamp(exp_ts).strftime("%Y-%m-%d")
-            exp_ssh_date = exp_display
+        # Fitur trial sudah dihapus — semua akun memakai durasi reguler.
+        days = get_int_setting("default_days", 7, 1)
+        exp_ts = now + (days * 86400)
+        exp_display = datetime.fromtimestamp(exp_ts).strftime("%Y-%m-%d")
+        exp_ssh_date = exp_display
 
         # Buat akun di server tujuan; gagal => JANGAN simpan ke DB (dulu error diabaikan)
         if srv["is_local"] == 1:
             if proto == "ssh":
                 created = engine.create_ssh_user(uname, secret, exp_ssh_date)
-            elif proto == "zivpn":
-                created, _msg = engine.add_zivpn_user(secret)
             else:
                 created, _msg = engine.add_xray_user(proto, uname, secret)
         else:
@@ -5695,9 +5476,9 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
         with db_conn() as conn:
             try:
                 cur = conn.execute(
-                    """INSERT INTO accounts (user_id, server_id, protocol, username, secret, ip_limit, quota_gb, speed_mbps, created_at, expired_at, is_trial)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (user_id, srv["id"], proto, uname, secret, ip_limit, quota_gb, speed_mbps, now, exp_ts, is_trial)
+                    """INSERT INTO accounts (user_id, server_id, protocol, username, secret, ip_limit, quota_gb, speed_mbps, created_at, expired_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (user_id, srv["id"], proto, uname, secret, ip_limit, quota_gb, speed_mbps, now, exp_ts)
                 )
             except sqlite3.IntegrityError:
                 # Race: username sudah diambil proses lain (kolom username UNIQUE).
@@ -5717,11 +5498,11 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
                     await msg_obj.answer(fail_txt, parse_mode="HTML")
                 return
             acc_id = cur.lastrowid
-            conn.execute("INSERT INTO create_history (user_id, username, protocol, is_trial, created_at) VALUES (?, ?, ?, ?, ?)", (user_id, uname, proto, is_trial, now))
+            conn.execute("INSERT INTO create_history (user_id, username, protocol, created_at) VALUES (?, ?, ?, ?)", (user_id, uname, proto, now))
             conn.commit()
             acc_row = conn.execute("SELECT * FROM accounts WHERE id=?", (acc_id,)).fetchone()
 
-        log_activity("CREATE_ACCOUNT", f"{proto.upper()} {uname} ({'Trial' if is_trial else 'Reguler'}) dibuat oleh {user_id}")
+        log_activity("CREATE_ACCOUNT", f"{proto.upper()} {uname} dibuat oleh {user_id}")
         out_html, kb = build_account_details_and_kb(acc_row, srv, back_target="back_home")
         text_msg = f"{out_html}\n<i>Ketuk teks link atau tombol di bawah untuk menyalin cepat:</i>{bw_note}"
         if edit_mode:
@@ -5744,7 +5525,6 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
                     bot_uname = "BotVPN"
                     bot_link = "https://t.me/"
                 u_tag = f"@{tg_user.username}" if tg_user.username else "-"
-                tipe_lbl = "🐒 Trial" if is_trial else "🦆 Reguler"
                 srv_isp = srv["isp"] if ("isp" in srv.keys() and srv["isp"]) else DEFAULT_ISP
                 exp_wib = datetime.fromtimestamp(exp_ts).strftime("%Y-%m-%d %H:%M") + " WIB" if isinstance(exp_ts, (int, float)) else html.escape(exp_display)
                 grp_msg = (
@@ -5752,7 +5532,7 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
                     "❀ ━━━━━━━━━━━━━━━ ❀\n"
                     f"👤 <b>Pemilik</b>  : {html.escape(tg_user.first_name or 'User')} ({html.escape(u_tag)})\n"
                     f"🆔 <b>User ID</b>  : <code>{user_id}</code>\n"
-                    f"⚡ <b>Protokol</b> : <b>{proto.upper()}</b> ({tipe_lbl})\n"
+                    f"⚡ <b>Protokol</b> : <b>{proto.upper()}</b>\n"
                     f"🔑 <b>Username</b> : <code>{html.escape(mask_str(uname))}</code>\n"
                     f"🌐 <b>Server</b>   : <code>{html.escape(srv['host'])}</code>\n"
                     f"🏢 <b>ISP</b>      : {html.escape(srv_isp)}\n"
@@ -6020,21 +5800,19 @@ async def cb_adm_del_all_menu(cb: CallbackQuery):
         return
     with db_conn() as conn:
         tot = conn.execute("SELECT COUNT(*) as c FROM accounts").fetchone()["c"]
-        trl = conn.execute("SELECT COUNT(*) as c FROM accounts WHERE is_trial=1").fetchone()["c"]
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"⚠️ Hapus SEMUA Akun ({tot} Akun)", callback_data="confirm_del_all:all")],
-        [InlineKeyboardButton(text=f"🧹 Hapus Semua Akun Trial ({trl} Akun)", callback_data="confirm_del_all:trial")],
         [InlineKeyboardButton(text="⬅️ Batal", callback_data="admin_home")]
     ])
-    await safe_edit_Basic(cb, f"<b>HAPUS SEMUA AKUN</b>\n• Total Akun: <b>{tot}</b>\n• Akun Trial: <b>{trl}</b>", parse_mode="HTML", reply_markup=kb)
+    await safe_edit_Basic(cb, f"<b>HAPUS SEMUA AKUN</b>\n• Total Akun: <b>{tot}</b>", parse_mode="HTML", reply_markup=kb)
 
 @router.callback_query(F.data.startswith("confirm_del_all:"))
 async def cb_confirm_del_all(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
         return
-    mode = cb.data.split(":")[1]
+    mode = "all"  # fitur hapus-akun-trial sudah dihapus
     with db_conn() as conn:
-        rows = conn.execute("SELECT * FROM accounts WHERE is_trial=1" if mode == "trial" else "SELECT * FROM accounts").fetchall()
+        rows = conn.execute("SELECT * FROM accounts").fetchall()
         srvs = {s["id"]: s for s in conn.execute("SELECT * FROM servers").fetchall()}
     if not rows:
         await cb.answer("Tidak ada akun untuk dihapus.", show_alert=True)
@@ -6055,10 +5833,7 @@ async def cb_confirm_del_all(cb: CallbackQuery, state: FSMContext):
         except Exception:
             pass
     with db_conn() as conn:
-        if mode == "trial":
-            conn.execute("DELETE FROM accounts WHERE is_trial=1")
-        else:
-            conn.execute("DELETE FROM accounts")
+        conn.execute("DELETE FROM accounts")
         conn.commit()
     msg = f"✅ <b>{len(rows) - len(failed)} akun dihapus</b> dari bot & server."
     if failed:
@@ -6098,7 +5873,7 @@ async def sync_unlimited_to_all_accounts(mode_key: str):
         if mode_key == "default_ip_limit":
             new_lim = get_int_setting("default_ip_limit", 0, 0)
             conn.execute(
-                "UPDATE accounts SET ip_limit=?, locked_until=0, strike_count=0, violation_level=0, active_sessions=0 WHERE expired_at > ? AND is_trial=0",
+                "UPDATE accounts SET ip_limit=?, locked_until=0, strike_count=0, violation_level=0, active_sessions=0 WHERE expired_at > ?",
                 (new_lim, now)
             )
             conn.commit()
@@ -6109,9 +5884,9 @@ async def sync_unlimited_to_all_accounts(mode_key: str):
         elif mode_key == "default_days":
             new_days = get_int_setting("default_days", 0, 0)
             if new_days <= 0:
-                conn.execute("UPDATE accounts SET expired_at=4102444800 WHERE is_trial=0 AND expired_at > ?", (now,))
+                conn.execute("UPDATE accounts SET expired_at=4102444800 WHERE expired_at > ?", (now,))
                 conn.commit()
-                accs = conn.execute("SELECT * FROM accounts WHERE is_trial=0 AND protocol='ssh' AND expired_at > ?", (now,)).fetchall()
+                accs = conn.execute("SELECT * FROM accounts WHERE protocol='ssh' AND expired_at > ?", (now,)).fetchall()
                 for a in accs:
                     srv = srvs.get(a["server_id"])
                     await asyncio.to_thread(engine.set_remote_or_local_lock, srv, "ssh", a["username"], a["secret"], False)
@@ -6150,8 +5925,7 @@ async def msg_set_cfg(msg: Message, state: FSMContext):
     set_setting(key, val_str)
     if key == "default_ip_limit":
         with db_conn() as conn:
-            # Trial tidak pernah kena limit IP
-            conn.execute("UPDATE accounts SET ip_limit=? WHERE expired_at > ? AND is_trial=0", (int(val_str), int(time.time())))
+            conn.execute("UPDATE accounts SET ip_limit=? WHERE expired_at > ?", (int(val_str), int(time.time())))
             conn.commit()
     elif key == "default_speed_mbps":
         engine.apply_global_speed_limit(int(val_str))
@@ -6285,7 +6059,7 @@ def render_user_manage_detail(target_uid: int):
     with db_conn() as conn:
         u = conn.execute("SELECT * FROM users WHERE user_id=?", (target_uid,)).fetchone()
         accs = conn.execute("SELECT * FROM accounts WHERE user_id=? AND expired_at > ?", (target_uid, now)).fetchall()
-        hist_cnt = conn.execute("SELECT COUNT(*) as c FROM create_history WHERE user_id=? AND is_trial=0 AND created_at >= ?", (target_uid, now - u_days * 86400)).fetchone()["c"]
+        hist_cnt = conn.execute("SELECT COUNT(*) as c FROM create_history WHERE user_id=? AND created_at >= ?", (target_uid, now - u_days * 86400)).fetchone()["c"]
     quota_lbl = f"{u['custom_max_create']}x (Khusus)" if u["custom_max_create"] >= 0 else f"{get_int_setting('user_create_max', 1, 0)}x (Default)"
     st_lbl = "🔴 BANNED" if u["is_banned"] == 1 else "🟢 AKTIF"
     acc_list_str = "\n".join([f"  • <code>{html.escape(a['username'])}</code> ({a['protocol'].upper()})" for a in accs]) or "  <i>Tidak ada akun aktif</i>"
@@ -6419,16 +6193,14 @@ async def cb_adm_limits_cfg(cb: CallbackQuery):
     txt = (
         "<b>DURASI, KUOTA, SPEED & LIMIT BUAT</b>\n────────────────────────────\n"
         f"• Masa Aktif Reguler : <b>{get_int_setting('default_days', 7, 1)} Hari</b>\n"
-        f"• Durasi Trial : <b>{get_int_setting('trial_minutes', 30, 1)} Menit</b>\n"
         f"• Limit Buat Akun : <b>{get_int_setting('user_create_max', 1, 0)}x dalam {get_int_setting('user_create_days', 3, 1)} Hari</b>\n"
-        f"• Limit Buat Trial : <b>{get_int_setting('trial_create_max', 3, 0)}x / Hari</b>\n"
         f"• Limit IP : <b>{'♾ Unlimited' if get_int_setting('default_ip_limit', 2, 0) <= 0 else str(get_int_setting('default_ip_limit', 2, 0)) + ' IP'}</b> | Kuota: <b>{get_int_setting('default_quota_gb', 50, 0)} GB</b>\n"
         f"• Speed Limit : <b>{get_int_setting('default_speed_mbps', 0, 0)} Mbps</b> | Max User: <b>{get_int_setting('max_users_per_vps', 100, 1)}</b>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 Masa Aktif (Hari)", callback_data="set_cfg:default_days"), InlineKeyboardButton(text="⏱ Durasi Trial (Menit)", callback_data="set_cfg:trial_minutes")],
+        [InlineKeyboardButton(text="📅 Masa Aktif (Hari)", callback_data="set_cfg:default_days")],
         [InlineKeyboardButton(text="🔢 Max Buat Akun", callback_data="set_cfg:user_create_max"), InlineKeyboardButton(text="📆 Rentang Hari Buat", callback_data="set_cfg:user_create_days")],
-        [InlineKeyboardButton(text="🎁 Max Trial / Hari", callback_data="set_cfg:trial_create_max"), InlineKeyboardButton(text="🛡 Limit IP", callback_data="set_cfg:default_ip_limit")],
+        [InlineKeyboardButton(text="🛡 Limit IP", callback_data="set_cfg:default_ip_limit")],
         [InlineKeyboardButton(text="📦 Kuota (GB)", callback_data="set_cfg:default_quota_gb"), InlineKeyboardButton(text="🚀 Speed (Mbps)", callback_data="set_cfg:default_speed_mbps")],
         [InlineKeyboardButton(text="👥 Max User VPS", callback_data="set_cfg:max_users_per_vps"), InlineKeyboardButton(text="🔄 Reset Limit Semua User", callback_data="adm_reset_all_quotas")],
         [InlineKeyboardButton(text="♾ Limit IP Unlimited", callback_data="quick_unl:default_ip_limit"), InlineKeyboardButton(text="♾ Masa Aktif Unlimited", callback_data="quick_unl:default_days")],
@@ -6712,9 +6484,9 @@ async def msg_admin_set_val(msg: Message, state: FSMContext):
     val = "" if raw_val == "-" else raw_val
     numeric_keys = {
         "lock_duration_min": (5, 1), "lock_strikes": (1, 1), "default_days": (7, 1),
-        "trial_minutes": (30, 1), "default_ip_limit": (2, 0), "default_quota_gb": (50, 0),
+        "default_ip_limit": (2, 0), "default_quota_gb": (50, 0),
         "default_speed_mbps": (0, 0), "max_users_per_vps": (100, 1),
-        "user_create_max": (1, 0), "user_create_days": (3, 1), "trial_create_max": (3, 0),
+        "user_create_max": (1, 0), "user_create_days": (3, 1),
     }
     if key in numeric_keys and val.strip().lower() in ("unlimited", "unl", "inf", "∞"):
         val = "0"
@@ -9015,7 +8787,7 @@ async def cb_adm_theme_menu(cb: CallbackQuery):
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{th_obj['title']}\n"
         f"{th_obj['bullet']} <b>Tombol Buat:</b> {th_obj['btn_create']} SSH / VMess / VLESS / Trojan\n"
-        f"{th_obj['bullet']} <b>Tombol Trial:</b> {th_obj['btn_trial']} SSH / VMess / VLESS / Trojan\n\n"
+
         "👇 Pilih gaya tampilan di bawah (berlaku instan):"
     )
     kb_rows = [
@@ -9464,7 +9236,6 @@ async def cb_adm_prefix_menu(cb: CallbackQuery, state: FSMContext = None):
     st_lbl = "🟢 ON (Aktif)" if pfx_on else "🔴 OFF (Nonaktif)"
     cur_dom = get_current_main_domain()
 
-    ex_trial = f"{pfx_val}-trial80994" if pfx_on else "trial80994"
     ex_reg = f"{pfx_val}-member01" if pfx_on else "member01"
 
     txt = (
@@ -9474,7 +9245,6 @@ async def cb_adm_prefix_menu(cb: CallbackQuery, state: FSMContext = None):
         f"• <b>Nama Prefix:</b> <code>{html.escape(pfx_val)}-</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "<b>Contoh Hasil Pembuatan Akun Saat Ini:</b>\n"
-        f"• <b>SSH Trial:</b>\n  <code>{html.escape(cur_dom)}:443@{html.escape(ex_trial)}:123a9</code>\n"
         f"• <b>Akun Reguler (SSH/Xray):</b>\n  <code>{html.escape(ex_reg)}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "<i>Gunakan tombol di bawah untuk mengaktifkan/mematikan (ON/OFF) atau mengganti teks penanda prefix:</i>"
@@ -9660,7 +9430,7 @@ async def unlock_and_expiry_worker():
                 ).fetchall()
                 removed_groups = {}
                 for r in expired_rows:
-                    if r["is_trial"] == 0 and global_days_lim == 0:
+                    if global_days_lim == 0:
                         conn.execute("UPDATE accounts SET expired_at=4102444800 WHERE id=?", (r["id"],))
                         continue
                     target_srv = srv_map.get(r["server_id"])
@@ -10413,7 +10183,7 @@ EOJRN
 systemctl restart systemd-journald 2>/dev/null || true
 
 # --- OpenVPN server minimal (UDP 1194) ---
-# Tujuan: fitur "OpenVPN TCP 80,1194 / SSL 443 / UDP 25000 / DNS 53" yang diiklankan
+# Tujuan: fitur "OpenVPN TCP 80,1194 / SSL 443 / DNS 53" yang diiklankan
 # di banner & menu bot benar-benar tersedia. Server minimal: port UDP 1194 saja.
 # Akun dikelola lewat CLI `ovpn-adduser` / `ovpn-rmuser` (tanpa integrasi bot).
 if [[ -x /usr/sbin/openvpn ]] && [[ -d /usr/share/easy-rsa ]]; then
@@ -10580,7 +10350,7 @@ vnstat --add -i "$IFACE" >/dev/null 2>&1 || true
 echo "[6/6b] Memasang SlowDNS (dnstt) & UDP-Custom..."
 ARCH_X=$(uname -m)
 case "$ARCH_X" in x86_64) XARCH="amd64";; aarch64|arm64) XARCH="arm64";; *) XARCH="amd64";; esac
-mkdir -p /etc/slowdns /etc/udp /etc/iptables /etc/zivpn
+mkdir -p /etc/slowdns /etc/udp /etc/iptables
 VAYDNS_BASE="https://raw.githubusercontent.com/sunekugg/tunelv2/main/bin"
 __fetch_raw() {  # $1=outfile $2=owner/repo/branch/path — fallback IP statis bila DNS mati
     local _OUT="$1" _P="$2" _IP
@@ -10650,30 +10420,11 @@ else
     UC_OK=1
 fi
 # Verifikasi binari SETELAH semua unduhan (dulu dicek sebelum unduh -> alarm palsu)
-for _BINCHK in vaydns-server udpgw udp-custom zivpn; do
+for _BINCHK in vaydns-server udpgw udp-custom; do
     if ! head -c4 "/usr/local/bin/$_BINCHK" 2>/dev/null | grep -q $'\x7fELF'; then
         echo "  !! PERINGATAN: $_BINCHK gagal diunduh — perbaiki DNS/koneksi lalu jalankan ulang installer"
     fi
 done
-# --- zivpn (ZiVPN UDP proxy :5667, binary Go statis tunggal) ---
-if ! head -c4 /usr/local/bin/zivpn 2>/dev/null | grep -q $'\\x7fELF'; then
-    rm -f /usr/local/bin/zivpn
-    __fetch_raw /usr/local/bin/zivpn \\
-        "zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${XARCH}" || true
-    if ! head -c4 /usr/local/bin/zivpn 2>/dev/null | grep -q $'\\x7fELF'; then
-        for _ZVURL in \\
-            "https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${XARCH}" \\
-            "https://ghfast.top/https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${XARCH}" \\
-            "https://gh-proxy.com/https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${XARCH}"; do
-            wget -qO /usr/local/bin/zivpn "$_ZVURL" 2>/dev/null || true
-            if [[ -s /usr/local/bin/zivpn ]] && head -c4 /usr/local/bin/zivpn 2>/dev/null | grep -q $'\\x7fELF'; then
-                echo "  -> zivpn diunduh dari: $_ZVURL"; break
-            fi
-            rm -f /usr/local/bin/zivpn
-        done
-    fi
-    chmod +x /usr/local/bin/zivpn 2>/dev/null || true
-fi
 # --- systemd-resolved: matikan agar :53 bebas ---
 # --- systemd-resolved: matikan agar :53 bebas ---
 systemctl stop systemd-resolved 2>/dev/null || true
@@ -10751,38 +10502,6 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 UCSVCEOF
-# --- zivpn: self-signed cert + config + service (UDP proxy :5667) ---
-if [[ ! -s /etc/zivpn/zivpn.crt || ! -s /etc/zivpn/zivpn.key ]]; then
-    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \\
-        -keyout /etc/zivpn/zivpn.key -out /etc/zivpn/zivpn.crt \\
-        -subj "/CN=zivpn" >/dev/null 2>&1 || true
-fi
-chmod 600 /etc/zivpn/zivpn.key 2>/dev/null || true
-chmod 644 /etc/zivpn/zivpn.crt 2>/dev/null || true
-cat > /etc/zivpn/config.json <<'ZVPJSON'
-{
-  "listen": ":5667",
-  "cert": "/etc/zivpn/zivpn.crt",
-  "key": "/etc/zivpn/zivpn.key",
-  "obfs": "zivpn",
-  "auth": { "mode": "passwords", "config": ["zivpn"] }
-}
-ZVPJSON
-if [[ -x /usr/local/bin/zivpn ]]; then
-cat > /etc/systemd/system/zivpn.service <<ZVPSVCEOF
-[Unit]
-Description=ZiVPN UDP Server (port 5667)
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/zivpn server -c /etc/zivpn/config.json
-Restart=always
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-ZVPSVCEOF
-fi
 # --- udpgw.service (badvpn UDP gateway :7300, fix UDPGW/badvpn) ---
 if [[ -x /usr/local/bin/udpgw ]]; then
 cat > /etc/systemd/system/udpgw.service <<UDPGWSVCEOF
@@ -10808,7 +10527,6 @@ IFACE=\$(ip route get 8.8.8.8 2>/dev/null | awk '{print \$5; exit}')
 iptables -t nat -F PREROUTING
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 5300 -j ACCEPT
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 53 -j REDIRECT --to-ports 5300
-iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 6000:19999 -j REDIRECT --to-ports 5667
 iptables -t nat -A PREROUTING -i "\$IFACE" -p udp --dport 1:65535 -j REDIRECT --to-ports 36712
 # FIX: izinkan INPUT UDP untuk 5300/53/36712 (chain INPUT beda dari NAT;
 # tanpa ini paket ke 36712 bisa diblok policy INPUT default-DROP)
@@ -10816,7 +10534,6 @@ iptables -C INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null || iptables -I INPU
 iptables -C INPUT -p udp --dport 5300 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 5300 -j ACCEPT
 iptables -C INPUT -p udp --dport 53 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 53 -j ACCEPT
 iptables -C INPUT -p udp --dport 7300 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 7300 -j ACCEPT
-iptables -C INPUT -p udp --dport 5667 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 5667 -j ACCEPT
 iptables -C INPUT -p udp --dport 6000:19999 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport 6000:19999 -j ACCEPT
 iptables-save > /etc/iptables/rules.v4
 IPTEOF
@@ -10836,11 +10553,6 @@ WantedBy=multi-user.target
 IPTSVC
 systemctl daemon-reload
 systemctl enable --now slowdns udpgw iptables-restore >/dev/null 2>&1 || true
-if [[ -x /usr/local/bin/zivpn ]]; then
-    systemctl enable --now zivpn >/dev/null 2>&1 || true
-else
-    systemctl disable --now zivpn >/dev/null 2>&1 || true
-fi
 if [[ -x /usr/local/bin/udp-custom ]] && head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
     systemctl enable --now udp-custom >/dev/null 2>&1 || true
 else
@@ -10864,11 +10576,9 @@ ufw allow 90/tcp >/dev/null 2>&1 || true
 ufw allow 444/tcp >/dev/null 2>&1 || true
 ufw allow 3128/tcp >/dev/null 2>&1 || true
 ufw allow 1194/tcp >/dev/null 2>&1 || true
-ufw allow 25000/udp >/dev/null 2>&1 || true
 ufw allow 5300/udp >/dev/null 2>&1 || true
 ufw allow 5300/tcp >/dev/null 2>&1 || true
 ufw allow 36712/udp >/dev/null 2>&1 || true
-ufw allow 5667/udp >/dev/null 2>&1 || true
 ufw allow 6000:19999/udp >/dev/null 2>&1 || true
 ufw allow 7100:7600/tcp >/dev/null 2>&1 || true
 ufw allow 7300/tcp >/dev/null 2>&1 || true
@@ -10882,10 +10592,6 @@ systemctl daemon-reload
 systemctl unmask nginx dropbear xray >/dev/null 2>&1 || true
 systemctl enable --now dropbear xray vpn-ws-bridge vpn-proto-daemons nginx vpn-telegram-bot
 systemctl restart dropbear xray vpn-ws-bridge vpn-proto-daemons nginx vpn-telegram-bot
-if [[ -x /usr/local/bin/zivpn ]]; then
-    systemctl enable --now zivpn >/dev/null 2>&1 || true
-    systemctl restart zivpn >/dev/null 2>&1 || true
-fi
 chmod 700 /etc/vpn-bot 2>/dev/null || true
 chmod 600 /etc/vpn-bot/vpn_data.db 2>/dev/null || true
 
@@ -10899,10 +10605,6 @@ for srv in xray dropbear nginx vpn-ws-bridge vpn-proto-daemons vpn-telegram-bot;
     st=$(systemctl is-active "$srv" 2>/dev/null || echo dead)
     printf " %-24s : %s\n" "$srv" "$st"
 done
-if [[ -x /usr/local/bin/zivpn ]]; then
-    st=$(systemctl is-active zivpn 2>/dev/null || echo dead)
-    printf " %-24s : %s\n" "zivpn" "$st"
-fi
 echo "-----------------------------------------------------------------------"
 echo " SlowDNS VayDNS  : UDP/TCP 53 (vaydns multi-record: TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA)"
 if [[ -x /usr/local/bin/udp-custom ]] && head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
@@ -11003,7 +10705,6 @@ ufw allow 443/tcp >/dev/null 2>&1 || true
 ufw allow 8443/tcp >/dev/null 2>&1 || true
 ufw allow 9080/tcp >/dev/null 2>&1 || true
 ufw allow 9088/tcp >/dev/null 2>&1 || true
-ufw allow 25000/udp >/dev/null 2>&1 || true
 ufw allow 5300/udp >/dev/null 2>&1 || true
 ufw allow 36712/udp >/dev/null 2>&1 || true
 ufw --force enable >/dev/null 2>&1 || true
@@ -11088,75 +10789,6 @@ LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 EOSVC
-
-# 6b. ZiVPN UDP Server (OPSIONAL - gagal unduh tidak menggagalkan instalasi)
-mkdir -p /etc/zivpn
-ZIVPN_OK=0
-if [[ ! -x /usr/local/bin/zivpn ]]; then
-    rm -f /usr/local/bin/zivpn
-    ZARCH=$(uname -m)
-    if [[ "$ZARCH" == "x86_64" ]]; then ZAR=amd64; elif [[ "$ZARCH" == "aarch64" ]]; then ZAR=arm64; else ZAR=""; fi
-    if [[ -n "$ZAR" ]]; then
-        for ZURL in \
-            "https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${ZAR}" \
-            "https://ghfast.top/https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${ZAR}" \
-            "https://gh-proxy.com/https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-${ZAR}"; do
-            wget -qO /usr/local/bin/zivpn "$ZURL" 2>/dev/null || true
-            if [[ -s /usr/local/bin/zivpn ]] && head -c4 /usr/local/bin/zivpn 2>/dev/null | grep -q $'\x7fELF'; then
-                ZIVPN_OK=1; break
-            fi
-            rm -f /usr/local/bin/zivpn
-        done
-        chmod +x /usr/local/bin/zivpn 2>/dev/null || true
-    fi
-else
-    ZIVPN_OK=1
-fi
-if [[ "$ZIVPN_OK" == "1" ]]; then
-    if [[ ! -s /etc/zivpn/zivpn.crt ]] || [[ ! -s /etc/zivpn/zivpn.key ]]; then
-        openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-            -keyout /etc/zivpn/zivpn.key -out /etc/zivpn/zivpn.crt \
-            -subj "/CN=zivpn" >/dev/null 2>&1 || true
-    fi
-    chmod 600 /etc/zivpn/zivpn.key 2>/dev/null || true
-    chmod 644 /etc/zivpn/zivpn.crt 2>/dev/null || true
-    if [[ ! -s /etc/zivpn/config.json ]]; then
-        cat > /etc/zivpn/config.json <<'ZVPJSON'
-{
-  "listen": ":5667",
-  "cert": "/etc/zivpn/zivpn.crt",
-  "key": "/etc/zivpn/zivpn.key",
-  "obfs": "zivpn",
-  "auth": { "mode": "passwords", "config": ["zivpn"] }
-}
-ZVPJSON
-    fi
-    cat > /etc/systemd/system/zivpn.service <<'ZVPSVCEOF'
-[Unit]
-Description=ZiVPN UDP Server (port 5667)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/zivpn server -c /etc/zivpn/config.json
-Restart=always
-RestartSec=3
-LimitNOFILE=65535
-
-[Install]
-WantedBy=multi-user.target
-ZVPSVCEOF
-    systemctl daemon-reload >/dev/null 2>&1 || true
-    systemctl enable zivpn >/dev/null 2>&1 || true
-    systemctl restart zivpn >/dev/null 2>&1 || true
-    for ZPT in 5667 6000:19999; do
-        iptables -C INPUT -p udp --dport "$ZPT" -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport "$ZPT" -j ACCEPT 2>/dev/null || true
-        iptables -t nat -C PREROUTING -p udp --dport "$ZPT" -j REDIRECT --to-ports 5667 2>/dev/null || iptables -t nat -I PREROUTING -p udp --dport "$ZPT" -j REDIRECT --to-ports 5667 2>/dev/null || true
-    done
-    netfilter-persistent save >/dev/null 2>&1 || true
-    mkdir -p /etc/iptables
-    iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-fi
 
 # 7. Pastikan Sertifikat SSL Tersedia (Sudah di-upload dari Master + Fallback lokal)
 if [[ ! -s /etc/xray/certs/fullchain.pem ]] || [[ ! -s /etc/xray/certs/privkey.pem ]]; then
@@ -11961,7 +11593,6 @@ ufw allow 90/tcp >/dev/null 2>&1 || true
 ufw allow 444/tcp >/dev/null 2>&1 || true
 ufw allow 3128/tcp >/dev/null 2>&1 || true
 ufw allow 1194/tcp >/dev/null 2>&1 || true
-ufw allow 25000/udp >/dev/null 2>&1 || true
 ufw allow 5300/udp >/dev/null 2>&1 || true
 ufw allow 5300/tcp >/dev/null 2>&1 || true
 ufw allow 36712/udp >/dev/null 2>&1 || true

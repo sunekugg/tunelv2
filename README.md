@@ -1,15 +1,15 @@
 # setup-vpn-full — Portable One-Click VPN & Telegram Bot Installer
 
 Fresh-VPS installer: SSH/Dropbear, Xray (VMess/VLESS/Trojan/Shadowsocks), WS-bridge,
-Nginx stream/HTTP, SlowDNS (VayDNS) + UDP-Custom, OpenVPN, ZiVPN, auto-SSL, dan
+Nginx stream/HTTP, SlowDNS (VayDNS) + UDP-Custom, OpenVPN, auto-SSL, dan
 bot Telegram sebagai panel kontrol.
 
 ## Fitur
 - Support Ubuntu 20.04–24.04 & Debian 11–13, RAM 512MB+
 - Tanpa hardcode token/admin/domain — semua diminta saat install
-- Protokol: SSH/Dropbear, VMess, VLESS, Trojan, Shadowsocks, OpenVPN (UDP 1194), ZiVPN (UDP)
+- Protokol: SSH/Dropbear, VMess, VLESS, Trojan, Shadowsocks, OpenVPN (UDP 1194)
 - SlowDNS VayDNS (UDP/TCP 53) + UDP-Custom (UDP 36712)
-- Bot Telegram: buat akun, trial, limit IP anti-false-lock 1 HP, kuota, speed limit, injeksi bug host, multi-server (VPS remote)
+- Bot Telegram: buat akun, limit IP anti-false-lock 1 HP, kuota, speed limit, injeksi bug host, multi-server (VPS remote)
 - Auto-heal service, live dashboard, backup self-portable
 
 ## Persyaratan
@@ -58,7 +58,7 @@ journalctl -u vpn-telegram-bot -f
 | `/etc/vpn-bot/config.env` | Bot token, admin ID, domain (chmod 600) |
 | `/etc/vpn-bot/vpn_data.db` | Database akun & sesi (chmod 600) |
 | `/etc/vpn-bot/bot.py` | Kode bot panel |
-| `/etc/vpn-bot/vpn_engine.py` | Engine backend (akun, xray, zivpn) |
+| `/etc/vpn-bot/vpn_engine.py` | Engine backend (akun SSH/Xray) |
 | `/usr/local/etc/xray/config.json` | Config Xray kanonik |
 
 Mengubah token/domain: edit `/etc/vpn-bot/config.env`, lalu
@@ -67,8 +67,8 @@ Mengubah token/domain: edit `/etc/vpn-bot/config.env`, lalu
 ## Port yang dibuka (ufw)
 SSH/Dropbear (22, 90), port web Xray & Nginx (80, 443, 444, 8080, 8443, 2052, 2053,
 2082, 2083, 2095, 2096, 8880, 9080, 9088), SlowDNS 53 & 5300 (TCP/UDP),
-OpenVPN 1194/tcp, ZiVPN 25000/udp, UDP-Custom 36712/udp, Squid 3128, dan rentang
-7100–7600/tcp, 7300/tcp, 5667/udp, 6000–19999/udp untuk protokol UDP.
+OpenVPN 1194/tcp, UDP-Custom 36712/udp, Squid 3128, dan rentang
+7100–7600/tcp, 7300/tcp, 6000–19999/udp untuk protokol UDP.
 
 ## Troubleshooting
 - **apt update gagal** — installer sudah menangani mirror internal provider yang mati
@@ -89,8 +89,7 @@ Installer aman dijalankan ulang (idempoten untuk config & service).
   (aiogram daftar pertama menang)
 - Tambah `apply_global_speed_limit` yang hilang → crash saat set speed limit
 - Remote nginx fallback: tambah grpc + http2 (gRPC remote VPS berfungsi)
-- ZiVPN: password hanya alfanumerik (tanda `-` membuat regex gagal), persistensi
-  iptables butuh `mkdir /etc/iptables` dulu
-- OpenVPN 2.5+ butuh `verify-client-cert none`
+- OpenVPN 2.5+ dinyatakan eksplisit `verify-client-cert require`
+- Fitur akun trial & protokol ZiVPN dihapus dari bot & installer
 - SSH banner `SSH-2.0-easyPro` tidak lagi diarahkan ke VMess TCP (fix SSL 443)
 - Validasi: `bash -n` OK, semua file Python compile OK, audit referensi engine kosong
