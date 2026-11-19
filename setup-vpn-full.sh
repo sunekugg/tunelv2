@@ -372,7 +372,7 @@ XRAY_ROUTES = {
     "/vmess": 10001,
     "/upvmess": 10003,
     "/vless": 10004,
-    "/upvless": 10006,
+    "/xvless": 10006,
     "/trojan": 10007,
     "/uptrojan": 10009,
     "/ss-ws": 10010,
@@ -1636,7 +1636,7 @@ def format_vless_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
     ws_notls = f"vless://{uuid_str}@{host}:80?path=/vless&security=none&encryption=none&host={host}&type=ws#{remarks}"
     grpc_tls = f"vless://{uuid_str}@{host}:443?mode=gun&security=tls&encryption=none&type=grpc&serviceName=vless&sni={host}#{remarks}"
     up_tls = f"vless://{uuid_str}@{host}:443?path=/upvless&security=tls&encryption=none&host={host}&type=httpupgrade&sni={host}#{remarks}"
-    up_notls = f"vless://{uuid_str}@{host}:80?path=/upvless&security=none&encryption=none&host={host}&type=httpupgrade#{remarks}"
+    up_notls = f"vless://{uuid_str}@{host}:80?path=/xvless&security=none&encryption=none&host={host}&type=xhttp#{remarks}"
 
     top_box = (
         "————————————————————————————————————\n"
@@ -1654,7 +1654,7 @@ def format_vless_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
         "Network        : ws,grpc,upgrade\n"
         "Path ws        : /vless\n"
         "serviceName    : vless\n"
-        "Path upgrade   : /upvless\n"
+        "Path xhttp     : /xvless\n"
         f"Limit IP       : {_ip_lbl(ip_limit)}\n"
         f"Expired On     : {h(expired)}\n"
         "————————————————————————————————————"
@@ -2770,7 +2770,7 @@ def install_full_remote_vps_sync(srv_row):
                 {"tag": "vmess-up", "listen": "127.0.0.1", "port": 10003, "protocol": "vmess", "settings": {"clients": []}, "streamSettings": {"network": "httpupgrade", "httpupgradeSettings": {"path": "/upvmess"}}},
                 {"tag": "vless-ws", "listen": "127.0.0.1", "port": 10004, "protocol": "vless", "settings": {"clients": [], "decryption": "none"}, "streamSettings": {"network": "ws", "wsSettings": {"path": "/vless"}}},
                 {"tag": "vless-grpc", "listen": "127.0.0.1", "port": 10005, "protocol": "vless", "settings": {"clients": [], "decryption": "none"}, "streamSettings": {"network": "grpc", "grpcSettings": {"serviceName": "vless"}}},
-                {"tag": "vless-up", "listen": "127.0.0.1", "port": 10006, "protocol": "vless", "settings": {"clients": [], "decryption": "none"}, "streamSettings": {"network": "httpupgrade", "httpupgradeSettings": {"path": "/upvless"}}},
+                {"tag": "vless-up", "listen": "127.0.0.1", "port": 10006, "protocol": "vless", "settings": {"clients": [], "decryption": "none"}, "streamSettings": {"network": "xhttp", "xhttpSettings": {"path": "/xvless"}}},
                 {"tag": "trojan-ws", "listen": "127.0.0.1", "port": 10007, "protocol": "trojan", "settings": {"clients": []}, "streamSettings": {"network": "ws", "wsSettings": {"path": "/trojan"}}},
                 {"tag": "trojan-grpc", "listen": "127.0.0.1", "port": 10008, "protocol": "trojan", "settings": {"clients": []}, "streamSettings": {"network": "grpc", "grpcSettings": {"serviceName": "trojan"}}},
                 {"tag": "trojan-up", "listen": "127.0.0.1", "port": 10009, "protocol": "trojan", "settings": {"clients": []}, "streamSettings": {"network": "httpupgrade", "httpupgradeSettings": {"path": "/uptrojan"}}},
@@ -4426,12 +4426,12 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
         l_wsntls = f"vless://{secret}@{host}:80?path=/vless&security=none&encryption=none&host={host}&type=ws#{uname}"
         l_grpc = f"vless://{secret}@{host}:443?mode=gun&security=tls&encryption=none&type=grpc&serviceName=vless&sni={host}#{uname}"
         l_uptls = f"vless://{secret}@{host}:443?path=/upvless&security=tls&encryption=none&host={host}&type=httpupgrade&sni={host}#{uname}"
-        l_upntls = f"vless://{secret}@{host}:80?path=/upvless&security=none&encryption=none&host={host}&type=httpupgrade#{uname}"
+        l_upntls = f"vless://{secret}@{host}:80?path=/xvless&security=none&encryption=none&host={host}&type=xhttp#{uname}"
         kb_rows.extend([
             [make_copy_btn("📋 Salin UUID", secret, f"cp:{acc_id}:uuid")],
             [make_copy_btn("📋 Salin WS TLS", l_wstls, f"cp:{acc_id}:wstls"), make_copy_btn("📋 Salin WS No-TLS", l_wsntls, f"cp:{acc_id}:wsntls")],
             [make_copy_btn("📋 Salin gRPC", l_grpc, f"cp:{acc_id}:grpc"), make_copy_btn("📋 Salin Upgrade TLS", l_uptls, f"cp:{acc_id}:uptls")],
-            [make_copy_btn("📋 Salin Upgrade No-TLS", l_upntls, f"cp:{acc_id}:upntls")],
+            [make_copy_btn("📋 Salin Xhttp No-TLS", l_upntls, f"cp:{acc_id}:upntls")],
             [make_copy_btn("🌐 Salin SlowDNS (NTLS)", l_wsntls, f"cp:{acc_id}:sdntls")]
         ])
     else:
@@ -10172,7 +10172,7 @@ cat << 'EOXRAY' > /etc/xray/config.json
     { "tag": "vmess-up", "listen": "127.0.0.1", "port": 10003, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "httpupgrade", "httpupgradeSettings": { "path": "/upvmess" } } },
     { "tag": "vless-ws", "listen": "127.0.0.1", "port": 10004, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } } },
     { "tag": "vless-grpc", "listen": "127.0.0.1", "port": 10005, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "vless" } } },
-    { "tag": "vless-up", "listen": "127.0.0.1", "port": 10006, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "httpupgrade", "httpupgradeSettings": { "path": "/upvless" } } },
+    { "tag": "vless-up", "listen": "127.0.0.1", "port": 10006, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "xhttp", "xhttpSettings": { "path": "/xvless" } } },
     { "tag": "trojan-ws", "listen": "127.0.0.1", "port": 10007, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/trojan" } } },
     { "tag": "trojan-grpc", "listen": "127.0.0.1", "port": 10008, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "trojan" } } },
     { "tag": "trojan-up", "listen": "127.0.0.1", "port": 10009, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "httpupgrade", "httpupgradeSettings": { "path": "/uptrojan" } } },
@@ -11062,6 +11062,7 @@ http {
 
         error_page 418 = @probe_ok;
         location = /vmess { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
+location = /xvless { proxy_pass http://127.0.0.1:10006; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; proxy_request_buffering off; }
         location = /vless { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
         location = /trojan { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
         location = /ss-ws { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
@@ -11291,6 +11292,7 @@ http {
 
         error_page 418 = @probe_ok;
         location = /vmess { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
+location = /xvless { proxy_pass http://127.0.0.1:10006; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; proxy_request_buffering off; }
         location = /vless { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
         location = /trojan { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
         location = /ss-ws { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
@@ -11400,7 +11402,7 @@ cat << 'EOXRAY' > /etc/xray/config.json
     { "tag": "vmess-up", "listen": "127.0.0.1", "port": 10003, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "httpupgrade", "httpupgradeSettings": { "path": "/upvmess" } } },
     { "tag": "vless-ws", "listen": "127.0.0.1", "port": 10004, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } } },
     { "tag": "vless-grpc", "listen": "127.0.0.1", "port": 10005, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "vless" } } },
-    { "tag": "vless-up", "listen": "127.0.0.1", "port": 10006, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "httpupgrade", "httpupgradeSettings": { "path": "/upvless" } } },
+    { "tag": "vless-up", "listen": "127.0.0.1", "port": 10006, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "xhttp", "xhttpSettings": { "path": "/xvless" } } },
     { "tag": "trojan-ws", "listen": "127.0.0.1", "port": 10007, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/trojan" } } },
     { "tag": "trojan-grpc", "listen": "127.0.0.1", "port": 10008, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "trojan" } } },
     { "tag": "trojan-up", "listen": "127.0.0.1", "port": 10009, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "httpupgrade", "httpupgradeSettings": { "path": "/uptrojan" } } },
