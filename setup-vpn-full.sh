@@ -4407,7 +4407,7 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
             [make_copy_btn("📋 Salin Payload WS", p_ws, f"cp:{acc_id}:p_ws"), make_copy_btn("📋 Salin Payload Enhanced", p_enh, f"cp:{acc_id}:p_enh")]
         ])
     elif proto == "vmess":
-        out_html = engine.format_vmess_html(uname, city, isp, host, secret, exp_display, ip_limit=ip_limit) + _slowdns_info_block(host)
+        out_html = engine.format_vmess_html(uname, city, isp, host, secret, exp_display, ip_limit=ip_limit)
         l_wstls = engine.make_vmess_b64(uname, host, 443, secret, "ws", "/vmess", "tls")
         l_wsntls = engine.make_vmess_b64(uname, host, 80, secret, "ws", "/vmess", "none")
         l_grpc = engine.make_vmess_b64(uname, host, 443, secret, "grpc", "vmess", "tls")
@@ -4421,7 +4421,7 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
             [make_copy_btn("🌐 Salin SlowDNS (NTLS)", l_wstls, f"cp:{acc_id}:sdntls")]
         ])
     elif proto == "vless":
-        out_html = engine.format_vless_html(uname, city, isp, host, secret, exp_display, ip_limit=ip_limit) + _slowdns_info_block(host)
+        out_html = engine.format_vless_html(uname, city, isp, host, secret, exp_display, ip_limit=ip_limit)
         l_wstls = f"vless://{secret}@{host}:443?path=/vless&security=tls&encryption=none&host={host}&type=ws&sni={host}#{uname}"
         l_wsntls = f"vless://{secret}@{host}:80?path=/vless&security=none&encryption=none&host={host}&type=ws#{uname}"
         l_grpc = f"vless://{secret}@{host}:443?mode=gun&security=tls&encryption=none&type=grpc&serviceName=vless&sni={host}#{uname}"
@@ -4435,7 +4435,7 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
             [make_copy_btn("🌐 Salin SlowDNS (NTLS)", l_wsntls, f"cp:{acc_id}:sdntls")]
         ])
     else:
-        out_html = engine.format_trojan_html(uname, city, isp, host, secret, exp_display, ip_limit=ip_limit) + _slowdns_info_block(host)
+        out_html = engine.format_trojan_html(uname, city, isp, host, secret, exp_display, ip_limit=ip_limit)
         l_wstls = f"trojan://{secret}@{host}:443?path=/trojan&security=tls&host={host}&type=ws&sni={host}#{uname}"
         l_grpc = f"trojan://{secret}@{host}:443?mode=gun&security=tls&type=grpc&serviceName=trojan&sni={host}#{uname}"
         l_uptls = f"trojan://{secret}@{host}:443?path=/uptrojan&security=tls&host={host}&type=httpupgrade&sni={host}#{uname}"
@@ -4800,29 +4800,6 @@ def main_menu_kb(user_id: int):
         buttons.append([InlineKeyboardButton(text="⚙️ Panel Admin", callback_data="admin_home")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def _slowdns_pubkey() -> str:
-    try:
-        with open("/etc/slowdns/server.pub") as _f:
-            return _f.read().strip()
-    except Exception:
-        return ""
-
-def _slowdns_info_block(host: str) -> str:
-    """Blok info SlowDNS utk akun Xray (NS, Public Key, Port). Kosong bila off."""
-    if not os.path.exists("/etc/slowdns/server.key"):
-        return ""
-    _pub = _slowdns_pubkey()
-    return (
-        "\n" + "————————————————————————————————————\n"
-        "               SLOWDNS (DNS TUNNEL)\n"
-        "————————————————————————————————————\n"
-        f"NS Domain      : <code>ns-{html.escape(host)}:5300</code>\n"
-        f"Public Key     : <code>{html.escape(_pub)}</code>\n"
-        "Port DNS       : 53 (redirect) / 5300\n"
-        "Mode           : WebSocket Non-TLS (NTLS)\n"
-        "Alamat klien   : 127.0.0.1 (via dnstt-client)\n"
-        "————————————————————————————————————"
-    )
 def admin_menu_kb():
     bot_on = get_setting("bot_status", "1") == "1"
     bot_lbl = "🤖 Status Bot: ON 🟢" if bot_on else "🤖 Status Bot: OFF 🔴"
