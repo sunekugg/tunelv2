@@ -371,6 +371,7 @@ def atomic_write_json(path, data):
 XRAY_ROUTES = {
     "/vmess": 10001,
     "/upvmess": 10003,    "/vless": 10004,    "/trojan": 10007,
+    "/upvless": 10006,
     "/uptrojan": 10009,    "/ss-ws": 10010,
 }
 
