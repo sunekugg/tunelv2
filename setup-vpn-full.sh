@@ -1509,7 +1509,8 @@ def make_vmess_b64(remarks, host, port, uuid_str, net, path, tls_val):
         "type": "none",
         "host": host,
         "sni": host,
-        "tls": tls_val
+        "tls": tls_val,
+        "alpn": "h2,http/1.1"
     }
     raw = json.dumps(obj, separators=(",", ":")).encode("utf-8")
     return "vmess://" + base64.b64encode(raw).decode("utf-8")
@@ -4438,7 +4439,7 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
         l_wsntls = f"vless://{secret}@{host}:80?path=/vless&security=none&encryption=none&host={host}&type=ws#{uname}"
         l_grpc = f"vless://{secret}@{host}:443?mode=gun&security=tls&encryption=none&type=grpc&serviceName=vless&sni={host}#{uname}"
         l_uptls = f"vless://{secret}@{host}:443?path=/upvless&security=tls&encryption=none&host={host}&type=httpupgrade&sni={host}#{uname}"
-        l_upntls = f"vless://{secret}@{host}:443?path=/xvless&security=tls&encryption=none&host={host}&type=xhttp&sni={host}#{uname}"
+        l_upntls = f"vless://{secret}@{host}:443?encryption=none&security=tls&sni={host}&alpn=h2,http/1.1&type=xhttp&host={host}&path=/xvless&mode=auto#{uname}"
         kb_rows.extend([
             [make_copy_btn("📋 Salin UUID", secret, f"cp:{acc_id}:uuid")],
             [make_copy_btn("📋 Salin WS TLS", l_wstls, f"cp:{acc_id}:wstls"), make_copy_btn("📋 Salin WS No-TLS", l_wsntls, f"cp:{acc_id}:wsntls")],
@@ -4451,7 +4452,7 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
         l_wstls = f"trojan://{secret}@{host}:443?path=/trojan&security=tls&host={host}&type=ws&sni={host}#{uname}"
         l_grpc = f"trojan://{secret}@{host}:443?mode=gun&security=tls&type=grpc&serviceName=trojan&sni={host}#{uname}"
         l_uptls = f"trojan://{secret}@{host}:443?path=/uptrojan&security=tls&host={host}&type=httpupgrade&sni={host}#{uname}"
-        l_xh = f"trojan://{secret}@{host}:443?path=/xtrojan&security=tls&host={host}&type=xhttp&sni={host}#{uname}"
+        l_xh = f"trojan://{secret}@{host}:443?security=tls&sni={host}&alpn=h2,http/1.1&type=xhttp&host={host}&path=/xtrojan&mode=auto#{uname}"
         kb_rows.extend([
             [make_copy_btn("📋 Salin Key / UUID", secret, f"cp:{acc_id}:uuid")],
             [make_copy_btn("📋 Salin WS TLS", l_wstls, f"cp:{acc_id}:wstls"), make_copy_btn("📋 Salin gRPC", l_grpc, f"cp:{acc_id}:grpc")],
@@ -5046,7 +5047,7 @@ async def cb_copy_fallback(cb: CallbackQuery):
         elif part == "uptls": val = engine.make_vmess_b64(uname, host, 443, secret, "httpupgrade", "/upvmess", "tls")
         elif part == "upntls": val = engine.make_vmess_b64(uname, host, 80, secret, "httpupgrade", "/upvmess", "none")
         elif part == "vmxh": val = engine.make_vmess_b64(uname, host, 443, secret, "xhttp", "/xvmess", "tls")
-        elif part == "trjxh": val = f"trojan://{secret}@{host}:443?path=/xtrojan&security=tls&host={host}&type=xhttp&sni={host}#{uname}"
+        elif part == "trjxh": val = f"trojan://{secret}@{host}:443?security=tls&sni={host}&alpn=h2,http/1.1&type=xhttp&host={host}&path=/xtrojan&mode=auto#{uname}"
     await cb.message.answer(f"Ketuk teks di bawah untuk menyalin:\n<code>{html.escape(val)}</code>", parse_mode="HTML")
     await cb.answer("Teks siap disalin!")
 
