@@ -1636,7 +1636,7 @@ def format_vless_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
     ws_notls = f"vless://{uuid_str}@{host}:80?path=/vless&security=none&encryption=none&host={host}&type=ws#{remarks}"
     grpc_tls = f"vless://{uuid_str}@{host}:443?mode=gun&security=tls&encryption=none&type=grpc&serviceName=vless&sni={host}#{remarks}"
     up_tls = f"vless://{uuid_str}@{host}:443?path=/upvless&security=tls&encryption=none&host={host}&type=httpupgrade&sni={host}#{remarks}"
-    up_notls = f"vless://{uuid_str}@{host}:80?path=/xvless&security=none&encryption=none&host={host}&type=xhttp#{remarks}"
+    up_notls = f"vless://{uuid_str}@{host}:443?path=/xvless&security=tls&encryption=none&host={host}&type=xhttp&sni={host}#{remarks}"
 
     top_box = (
         "————————————————————————————————————\n"
@@ -4426,12 +4426,12 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
         l_wsntls = f"vless://{secret}@{host}:80?path=/vless&security=none&encryption=none&host={host}&type=ws#{uname}"
         l_grpc = f"vless://{secret}@{host}:443?mode=gun&security=tls&encryption=none&type=grpc&serviceName=vless&sni={host}#{uname}"
         l_uptls = f"vless://{secret}@{host}:443?path=/upvless&security=tls&encryption=none&host={host}&type=httpupgrade&sni={host}#{uname}"
-        l_upntls = f"vless://{secret}@{host}:80?path=/xvless&security=none&encryption=none&host={host}&type=xhttp#{uname}"
+        l_upntls = f"vless://{secret}@{host}:443?path=/xvless&security=tls&encryption=none&host={host}&type=xhttp&sni={host}#{uname}"
         kb_rows.extend([
             [make_copy_btn("📋 Salin UUID", secret, f"cp:{acc_id}:uuid")],
             [make_copy_btn("📋 Salin WS TLS", l_wstls, f"cp:{acc_id}:wstls"), make_copy_btn("📋 Salin WS No-TLS", l_wsntls, f"cp:{acc_id}:wsntls")],
             [make_copy_btn("📋 Salin gRPC", l_grpc, f"cp:{acc_id}:grpc"), make_copy_btn("📋 Salin Upgrade TLS", l_uptls, f"cp:{acc_id}:uptls")],
-            [make_copy_btn("📋 Salin Xhttp", l_upntls, f"cp:{acc_id}:upntls")],
+            [make_copy_btn("📋 Salin VLESS Xhttp", l_upntls, f"cp:{acc_id}:upntls")],
             [make_copy_btn("🌐 Salin SlowDNS (NTLS)", l_wsntls, f"cp:{acc_id}:sdntls")]
         ])
     else:
