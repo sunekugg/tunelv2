@@ -1669,7 +1669,7 @@ def format_vless_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
         f"<code>{h(grpc_tls)}</code>\n"
         f"<pre>————————————————————————————————————\n          VLESS Upgrade TLS\n————————————————————————————————————</pre>\n"
         f"<code>{h(up_tls)}</code>\n"
-        f"<pre>————————————————————————————————————\n         VLESS Upgrade NO TLS\n————————————————————————————————————</pre>\n"
+        f"<pre>————————————————————————————————————\n              VLESS Xhttp\n————————————————————————————————————</pre>\n"
         f"<code>{h(up_notls)}</code>\n"
         f"<pre>————————————————————————————————————</pre>"
     )
