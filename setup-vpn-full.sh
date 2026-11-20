@@ -4353,8 +4353,8 @@ def build_force_join_prompt():
         "Silakan klik tombol <b>Gabung Sekarang</b> di bawah, lalu klik <b>Saya Sudah Bergabung</b>:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📢 Gabung Channel / Grup Sekarang", url=fj_link)],
-        [InlineKeyboardButton(text="🔄 Saya Sudah Bergabung (Cek Ulang)", callback_data="back_home")]
+        [InlineKeyboardButton(text="🟩 Gabung Channel / Grup Sekarang", url=fj_link)],
+        [InlineKeyboardButton(text="🟦 Saya Sudah Bergabung (Cek Ulang)", callback_data="back_home")]
     ])
     return txt, kb
 
@@ -4443,8 +4443,8 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
             [make_copy_btn("🌐 Salin SlowDNS (NTLS)", l_wstls, f"cp:{acc_id}:sdntls")]
         ])
 
-    # Inject Bug, Tukar Protokol, Pindah Server pindah ke 🛠️ Kelola Akun Mandiri.
-    kb_rows.append([InlineKeyboardButton(text="🛠️ Kelola Akun Mandiri", callback_data=f"mandiri:{acc_id}")])
+    # Inject Bug, Tukar Protokol, Pindah Server pindah ke 🟨 Kelola Akun Mandiri.
+    kb_rows.append([InlineKeyboardButton(text="🟨 Kelola Akun Mandiri", callback_data=f"mandiri:{acc_id}")])
 
     kb_rows.append([
         InlineKeyboardButton(text="👤 Akun Saya", callback_data="my_accounts"),
@@ -4767,7 +4767,7 @@ def build_welcome_text(user_id: int) -> str:
 def main_menu_kb(user_id: int):
     th = get_active_theme()
     # Ikon khusus per protokol (tetap memakai label teks dari tema aktif)
-    icons = {"ssh": "⚖️", "vmess": "📡", "vless": "🖥", "trojan": "🔊"}
+    icons = {"ssh": "⚪", "vmess": "🟩", "vless": "🟦", "trojan": "🟥"}
     c_btn = {p: f"{icons[p]} {th['btn_create'].split(' ',1)[1].strip()} {p.upper()}" for p in icons}
     buttons = [
         [
@@ -4779,18 +4779,18 @@ def main_menu_kb(user_id: int):
             InlineKeyboardButton(text=c_btn["trojan"], callback_data="create:trojan:0")
         ],
         [
-            InlineKeyboardButton(text="🔍 Cek Status Bug / Host ISP", callback_data="bug_scanner_start")
+            InlineKeyboardButton(text="🟦 Cek Status Bug / Host ISP", callback_data="bug_scanner_start")
         ],
         [
-            InlineKeyboardButton(text="💉 Inject Akun Luar", callback_data="ext_inject_start"),
-            InlineKeyboardButton(text="🌐 List Wildcard", callback_data="list_wildcard_menu")
+            InlineKeyboardButton(text="🟩 Inject Akun Luar", callback_data="ext_inject_start"),
+            InlineKeyboardButton(text="🟦 List Wildcard", callback_data="list_wildcard_menu")
         ],
         [
             InlineKeyboardButton(text="👤 Akun Saya", callback_data="my_accounts"),
-            InlineKeyboardButton(text="📊 Status Server", callback_data="server_info")
+            InlineKeyboardButton(text="🟦 Status Server", callback_data="server_info")
         ],
         [
-            InlineKeyboardButton(text="🗑 Hapus Akun", callback_data="del_acc_menu")
+            InlineKeyboardButton(text="🟥 Hapus Akun", callback_data="del_acc_menu")
         ]
     ]
     if is_admin(user_id):
@@ -4807,8 +4807,8 @@ def admin_menu_kb():
     pfx_lbl = f"🏷️ Prefix: ON ({pfx_val}-) 🟢" if pfx_on else "🏷️ Prefix Akun: OFF 🔴"
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🖥 INFO VPS", callback_data="adm_info_vps"),
-            InlineKeyboardButton(text="🔧 SSL & Services", callback_data="adm_ssl_services")
+            InlineKeyboardButton(text="🟦 INFO VPS", callback_data="adm_info_vps"),
+            InlineKeyboardButton(text="🟨 SSL & Services", callback_data="adm_ssl_services")
         ],
         [
             InlineKeyboardButton(text=bot_lbl, callback_data="adm_toggle_bot"),
@@ -4818,47 +4818,47 @@ def admin_menu_kb():
             InlineKeyboardButton(text=pfx_lbl, callback_data="adm_prefix_menu")
         ],
         [
-            InlineKeyboardButton(text="🌐 Change Domain VPS", callback_data="adm_chg_domain_menu"),
-            InlineKeyboardButton(text="🔄 Reset Limit Semua User", callback_data="adm_reset_all_quotas")
+            InlineKeyboardButton(text="🟨 Change Domain VPS", callback_data="adm_chg_domain_menu"),
+            InlineKeyboardButton(text="🟥 Reset Limit Semua User", callback_data="adm_reset_all_quotas")
         ],
         [
             InlineKeyboardButton(text="🟢 Cek User Online", callback_data="adm_online"),
             InlineKeyboardButton(text="📊 Auto-Report Login Grup", callback_data="adm_login_rep_menu")
         ],
         [
-            InlineKeyboardButton(text="🔓 Unlock Limit IP", callback_data="adm_unlock_list")
+            InlineKeyboardButton(text="⬜ Unlock Limit IP", callback_data="adm_unlock_list")
         ],
         [
-            InlineKeyboardButton(text="👥 Kelola Admin", callback_data="adm_admin_list"),
-        InlineKeyboardButton(text="👥 Kelola User & ID", callback_data="adm_users"),
-            InlineKeyboardButton(text="🗑 Hapus Semua Akun", callback_data="adm_del_all_menu")
+            InlineKeyboardButton(text="🟨 Kelola Admin", callback_data="adm_admin_list"),
+        InlineKeyboardButton(text="🟨 Kelola User & ID", callback_data="adm_users"),
+            InlineKeyboardButton(text="⬛ Hapus Semua Akun", callback_data="adm_del_all_menu")
         ],
         [
-            InlineKeyboardButton(text="🔒 Pengaturan Lock", callback_data="adm_lock_cfg"),
+            InlineKeyboardButton(text="🟨 Pengaturan Lock", callback_data="adm_lock_cfg"),
             InlineKeyboardButton(text="⚙️ Durasi, Kuota & Limit Buat", callback_data="adm_limits_cfg")
         ],
         [
-            InlineKeyboardButton(text="🌐 SlowDNS & UDP-Custom", callback_data="adm_slowdns_udp")
+            InlineKeyboardButton(text="🟨 SlowDNS & UDP-Custom", callback_data="adm_slowdns_udp")
         ],
         [
-            InlineKeyboardButton(text="🖥 Kelola Multi-VPS", callback_data="adm_vps"),
-            InlineKeyboardButton(text="🌍 Relay Multi-Negara", callback_data="adm_relays")
+            InlineKeyboardButton(text="🟦 Kelola Multi-VPS", callback_data="adm_vps"),
+            InlineKeyboardButton(text="🟦 Relay Multi-Negara", callback_data="adm_relays")
         ],
         [
-            InlineKeyboardButton(text="🐞 Kelola Preset Bug", callback_data="adm_bugs_menu"),
-            InlineKeyboardButton(text="📝 Banner HTML & Bug", callback_data="adm_banner_cfg")
+            InlineKeyboardButton(text="🟨 Kelola Preset Bug", callback_data="adm_bugs_menu"),
+            InlineKeyboardButton(text="🟨 Banner HTML & Bug", callback_data="adm_banner_cfg")
         ],
         [
-            InlineKeyboardButton(text="📢 Wajib Join & Set Topic", callback_data="adm_group_cfg"),
-            InlineKeyboardButton(text="🖼 Set Welcome (Teks/Foto)", callback_data="adm_welcome_cfg")
+            InlineKeyboardButton(text="🟩 Wajib Join & Set Topic", callback_data="adm_group_cfg"),
+            InlineKeyboardButton(text="🟨 Set Welcome (Teks/Foto)", callback_data="adm_welcome_cfg")
         ],
         [
-            InlineKeyboardButton(text="🎨 Ganti Tema Bot", callback_data="adm_theme_menu"),
-            InlineKeyboardButton(text="📣 Broadcast User", callback_data="adm_broadcast_menu")
+            InlineKeyboardButton(text="🟨 Ganti Tema Bot", callback_data="adm_theme_menu"),
+            InlineKeyboardButton(text="🟩 Broadcast User", callback_data="adm_broadcast_menu")
         ],
         [
-            InlineKeyboardButton(text="📦 Kirim Full Script Portable", callback_data="adm_send_backup"),
-            InlineKeyboardButton(text="📋 Log Aktivitas", callback_data="adm_logs")
+            InlineKeyboardButton(text="🟦 Kirim Full Script Portable", callback_data="adm_send_backup"),
+            InlineKeyboardButton(text="🟦 Log Aktivitas", callback_data="adm_logs")
         ],
         [
             InlineKeyboardButton(text="⬅️ Kembali ke Menu Utama", callback_data="back_home")
@@ -4893,8 +4893,8 @@ async def cmd_get_id(msg: Message):
     kb = None
     if msg.from_user.id == ADMIN_ID and chat_id < 0:
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📌 Jadikan Topic Log Buat Akun", callback_data=f"bind_grp:{chat_id}:{thread_id}:create")],
-            [InlineKeyboardButton(text="🚨 Jadikan Topic Log Multi-Login", callback_data=f"bind_grp:{chat_id}:{thread_id}:lock")],
+            [InlineKeyboardButton(text="🟨 Jadikan Topic Log Buat Akun", callback_data=f"bind_grp:{chat_id}:{thread_id}:create")],
+            [InlineKeyboardButton(text="🟥 Jadikan Topic Log Multi-Login", callback_data=f"bind_grp:{chat_id}:{thread_id}:lock")],
             [InlineKeyboardButton(text="✅ Jadikan Topic Semua Notifikasi", callback_data=f"bind_grp:{chat_id}:{thread_id}:all")]
         ])
     await msg.reply(
@@ -4925,7 +4925,7 @@ async def cmd_start(msg: Message, state: FSMContext):
     if msg.chat.id < 0:
         me = await bot.get_me()
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💬 Buat Akun di Private Chat (DM)", url=f"https://t.me/{me.username}")]
+            [InlineKeyboardButton(text="🟩 Buat Akun di Private Chat (DM)", url=f"https://t.me/{me.username}")]
         ])
         await msg.reply(
             "ℹ️ <b>Grup/Topik ini khusus untuk Notifikasi Sistem.</b>\n"
@@ -4978,10 +4978,10 @@ async def cb_my_accounts(cb: CallbackQuery):
         if r["locked_until"] > now:
             lock_str = datetime.fromtimestamp(r["locked_until"]).strftime("%H:%M WIB")
             status_lbl = f"🔴 <b>TERKUNCI sampai {lock_str}</b>"
-            kb.append([InlineKeyboardButton(text=f"📄 Lihat {r['username']} ({r['protocol'].upper()})", callback_data=f"view_my:{r['id']}")])
+            kb.append([InlineKeyboardButton(text=f"🟦 Lihat {r['username']} ({r['protocol'].upper()})", callback_data=f"view_my:{r['id']}")])
         else:
             status_lbl = "🟢 Aktif"
-            # Inject bug / tukar protokol / pindah server ada di 🛠️ Kelola Akun Mandiri.
+            # Inject bug / tukar protokol / pindah server ada di 🟨 Kelola Akun Mandiri.
             kb.append([InlineKeyboardButton(
                 text=f"📄 {r['username']} ({r['protocol'].upper()})",
                 callback_data=f"view_my:{r['id']}")])
@@ -4990,7 +4990,7 @@ async def cb_my_accounts(cb: CallbackQuery):
             f"  Status : {status_lbl}\n"
             f"  Limit  : {'Unlimited' if (r['ip_limit'] or 0) <= 0 else str(r['ip_limit']) + ' IP'} | Exp: {exp_dt}"
         )
-    kb.append([InlineKeyboardButton(text="🛠️ Kelola Akun Mandiri", callback_data="mandiri_pick")])
+    kb.append([InlineKeyboardButton(text="🟨 Kelola Akun Mandiri", callback_data="mandiri_pick")])
     kb.append([InlineKeyboardButton(text="⬅️ Kembali ke Menu Utama", callback_data="back_home")])
     await safe_edit_Basic(cb, "\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
@@ -5033,7 +5033,7 @@ async def cb_copy_fallback(cb: CallbackQuery):
 
 # ==============================================================================
 # HAPUS AKUN — DIPISAH DARI MENU "AKUN SAYA"
-# Alur: Menu Utama -> 🗑 Hapus Akun -> pilih akun -> konfirmasi (di luar menu Akun Saya)
+# Alur: Menu Utama -> 🟥 Hapus Akun -> pilih akun -> konfirmasi (di luar menu Akun Saya)
 # ==============================================================================
 MANDIRI_TXT = (
     "🛠️ <b>KELOLA AKUN MANDIRI (TANPA POTONG KUOTA)</b>\n"
@@ -5099,18 +5099,18 @@ def mandiri_kb(acc):
     proto = acc["protocol"]
     rows = [
         [InlineKeyboardButton(text="♻️ Reset Sesi / IP", callback_data=f"mnd_reset:{aid}"),
-         InlineKeyboardButton(text="🔑 Ganti UUID / Pass", callback_data=f"mnd_secret:{aid}")],
+         InlineKeyboardButton(text="🟨 Ganti UUID / Pass", callback_data=f"mnd_secret:{aid}")],
     ]
     if proto in ("vmess", "vless", "trojan"):
-        rows.append([InlineKeyboardButton(text="🔄 Tukar Protokol", callback_data=f"chg_proto_menu:{aid}"),
-                     InlineKeyboardButton(text="🌐 Pindah Server", callback_data=f"move_srv_menu:{aid}")])
+        rows.append([InlineKeyboardButton(text="🟨 Tukar Protokol", callback_data=f"chg_proto_menu:{aid}"),
+                     InlineKeyboardButton(text="🟦 Pindah Server", callback_data=f"move_srv_menu:{aid}")])
     else:
-        rows.append([InlineKeyboardButton(text="🌐 Pindah Server", callback_data=f"move_srv_menu:{aid}")])
-    rows.append([InlineKeyboardButton(text="📄 Lihat Config", callback_data=f"view_my:{aid}")] +
+        rows.append([InlineKeyboardButton(text="🟦 Pindah Server", callback_data=f"move_srv_menu:{aid}")])
+    rows.append([InlineKeyboardButton(text="🟦 Lihat Config", callback_data=f"view_my:{aid}")] +
                 ([] if proto == "ssh" else
-                 [InlineKeyboardButton(text="🎯 Inject Bug / Clash", callback_data=f"inj_menu:{aid}")]))
+                 [InlineKeyboardButton(text="🟩 Inject Bug / Clash", callback_data=f"inj_menu:{aid}")]))
     if proto in ("vmess", "vless", "trojan"):
-        rows.append([InlineKeyboardButton(text="🔗 Smart Subscription", callback_data=f"inj_extra:{aid}:sub")])
+        rows.append([InlineKeyboardButton(text="🟦 Smart Subscription", callback_data=f"inj_extra:{aid}:sub")])
     rows.append([InlineKeyboardButton(text="⬅️ Kembali ke Akun Saya", callback_data="my_accounts")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -5661,7 +5661,7 @@ async def cb_admin_home(cb: CallbackQuery, state: FSMContext = None):
         f"• <b>Status Bot</b>   : {bot_st}\n"
         f"• <b>Limit Buat</b>   : {c_max}x dalam {c_days} Hari\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Silakan pilih menu pengelolaan atau klik <b>🖥 INFO VPS</b>:"
+        "Silakan pilih menu pengelolaan atau klik <b>🟦 INFO VPS</b>:"
     )
     try:
         await safe_edit_Basic(cb, txt, parse_mode="HTML", reply_markup=admin_menu_kb())
@@ -5676,7 +5676,7 @@ async def cb_adm_info_vps(cb: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🔄 Refresh INFO VPS", callback_data="adm_info_vps"),
-            InlineKeyboardButton(text="🔧 SSL & Services", callback_data="adm_ssl_services")
+            InlineKeyboardButton(text="🟨 SSL & Services", callback_data="adm_ssl_services")
         ],
         [InlineKeyboardButton(text="⬅️ Kembali ke Panel Admin", callback_data="admin_home")]
     ])
@@ -6096,7 +6096,7 @@ async def cb_adm_users(cb: CallbackQuery, state: FSMContext):
         tot_u = conn.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
         ban_u = conn.execute("SELECT COUNT(*) as c FROM users WHERE is_banned=1").fetchone()["c"]
         recent_u = conn.execute("SELECT * FROM users ORDER BY joined_at DESC LIMIT 10").fetchall()
-    kb = [[InlineKeyboardButton(text="🔍 Cari ID / Username", callback_data="adm_find_user"), InlineKeyboardButton(text="🔄 Reset Limit Semua User", callback_data="adm_reset_all_quotas")]]
+    kb = [[InlineKeyboardButton(text="🔍 Cari ID / Username", callback_data="adm_find_user"), InlineKeyboardButton(text="🟥 Reset Limit Semua User", callback_data="adm_reset_all_quotas")]]
     for u in recent_u:
         st_icon = "🔴" if u["is_banned"] == 1 else "🟢"
         uname_str = f"@{u['username']}" if u["username"] else u["first_name"]
@@ -6158,7 +6158,7 @@ def render_user_manage_detail(target_uid: int):
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Reset Limit Buat", callback_data=f"uact:resetq:{target_uid}"), InlineKeyboardButton(text="🎯 Set Kuota Khusus", callback_data=f"uact:setq:{target_uid}")],
-        [InlineKeyboardButton(text="✅ Unban User" if u["is_banned"] == 1 else "🚫 Ban User", callback_data=f"uact:toggleban:{target_uid}"), InlineKeyboardButton(text="🗑 Hapus Akun User", callback_data=f"uact:delaccs:{target_uid}")],
+        [InlineKeyboardButton(text="✅ Unban User" if u["is_banned"] == 1 else "🚫 Ban User", callback_data=f"uact:toggleban:{target_uid}"), InlineKeyboardButton(text="🟥 Hapus Akun User", callback_data=f"uact:delaccs:{target_uid}")],
         [InlineKeyboardButton(text="⬅️ Kembali", callback_data="adm_users")]
     ])
     return txt, kb
@@ -6289,7 +6289,7 @@ async def cb_adm_limits_cfg(cb: CallbackQuery):
         [InlineKeyboardButton(text="🔢 Max Buat Akun", callback_data="set_cfg:user_create_max"), InlineKeyboardButton(text="📆 Rentang Hari Buat", callback_data="set_cfg:user_create_days")],
         [InlineKeyboardButton(text="🛡 Limit IP", callback_data="set_cfg:default_ip_limit")],
         [InlineKeyboardButton(text="📦 Kuota (GB)", callback_data="set_cfg:default_quota_gb"), InlineKeyboardButton(text="🚀 Speed (Mbps)", callback_data="set_cfg:default_speed_mbps")],
-        [InlineKeyboardButton(text="👥 Max User VPS", callback_data="set_cfg:max_users_per_vps"), InlineKeyboardButton(text="🔄 Reset Limit Semua User", callback_data="adm_reset_all_quotas")],
+        [InlineKeyboardButton(text="👥 Max User VPS", callback_data="set_cfg:max_users_per_vps"), InlineKeyboardButton(text="🟥 Reset Limit Semua User", callback_data="adm_reset_all_quotas")],
         [InlineKeyboardButton(text="♾ Limit IP Unlimited", callback_data="quick_unl:default_ip_limit"), InlineKeyboardButton(text="♾ Masa Aktif Unlimited", callback_data="quick_unl:default_days")],
         [InlineKeyboardButton(text="⬅️ Kembali ke Panel Admin", callback_data="admin_home")]
     ])
@@ -7387,14 +7387,14 @@ async def cb_adm_welcome_cfg(cb: CallbackQuery, state: FSMContext):
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📝 Edit Teks Welcome", callback_data="wel_act:edit_text"),
+            InlineKeyboardButton(text="🟨 Edit Teks Welcome", callback_data="wel_act:edit_text"),
             InlineKeyboardButton(text="🖼 Pasang / Ganti Foto", callback_data="wel_act:edit_photo")
         ],
         [
             InlineKeyboardButton(text="🗑 Hapus Foto", callback_data="wel_act:del_photo"),
             InlineKeyboardButton(text="🔄 Reset Teks Default", callback_data="wel_act:reset_text")
         ],
-        [InlineKeyboardButton(text="👁 Tes Tampilan Welcome", callback_data="back_home")],
+        [InlineKeyboardButton(text="⬜ Tes Tampilan Welcome", callback_data="back_home")],
         [InlineKeyboardButton(text="⬅️ Kembali ke Panel Admin", callback_data="admin_home")]
     ])
     await safe_edit_Basic(cb, txt, reply_markup=kb)
@@ -7895,14 +7895,14 @@ async def cb_list_wildcard_menu(cb: CallbackQuery):
     for idx, b in enumerate(presets, 1):
         lines.append(f"{idx}. <code>{html.escape(b)}</code>")
     lines.append("\n────────────────────────────")
-    lines.append("💡 <i>Gunakan daftar di atas pada menu <b>🎯 Inject Bug</b> atau <b>💉 Inject Akun Luar</b>.</i>")
+    lines.append("💡 <i>Gunakan daftar di atas pada menu <b>🎯 Inject Bug</b> atau <b>🟩 Inject Akun Luar</b>.</i>")
 
     kb_rows = [
-        [InlineKeyboardButton(text="💉 Inject Akun Luar", callback_data="ext_inject_start")],
+        [InlineKeyboardButton(text="🟩 Inject Akun Luar", callback_data="ext_inject_start")],
         [InlineKeyboardButton(text="🏠 Kembali ke Menu Utama", callback_data="back_home")]
     ]
     if cb.from_user.id == ADMIN_ID:
-        kb_rows.insert(1, [InlineKeyboardButton(text="🐞 Kelola Preset Bug (Admin)", callback_data="adm_bugs_menu")])
+        kb_rows.insert(1, [InlineKeyboardButton(text="🟨 Kelola Preset Bug (Admin)", callback_data="adm_bugs_menu")])
     await safe_edit_Basic(cb, "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
 
 # ==============================================================================
@@ -8148,7 +8148,7 @@ async def render_external_injected(msg_or_cb, ext_acc: dict, mode: str, bug_val:
             InlineKeyboardButton(text="🎯 Ganti Bug", callback_data=f"ext_mode:{mode}")
         ],
         [
-            InlineKeyboardButton(text="💉 Inject Akun Luar Lainnya", callback_data="ext_inject_start"),
+            InlineKeyboardButton(text="🟩 Inject Akun Luar Lainnya", callback_data="ext_inject_start"),
             InlineKeyboardButton(text="🏠 Menu Utama", callback_data="back_home")
         ]
     ])
