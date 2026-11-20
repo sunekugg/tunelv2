@@ -371,10 +371,12 @@ def atomic_write_json(path, data):
 XRAY_ROUTES = {
     "/vmess": 10001,
     "/upvmess": 10003,
+    "/xvmess": 10030,
     "/vless": 10004,
     "/xvless": 10006,
     "/trojan": 10007,
     "/uptrojan": 10009,
+    "/xtrojan": 10031,
     "/ss-ws": 10010,
 }
 
@@ -1592,6 +1594,7 @@ def format_vmess_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
     grpc_tls = make_vmess_b64(remarks, host, 443, uuid_str, "grpc", "vmess", "tls")
     up_tls = make_vmess_b64(remarks, host, 443, uuid_str, "httpupgrade", "/upvmess", "tls")
     up_notls = make_vmess_b64(remarks, host, 80, uuid_str, "httpupgrade", "/upvmess", "none")
+    xh = make_vmess_b64(remarks, host, 443, uuid_str, "xhttp", "/xvmess", "tls")
 
     top_box = (
         "————————————————————————————————————\n"
@@ -1607,7 +1610,7 @@ def format_vmess_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
         f"id             : {h(uuid_str)}\n"
         "alterId        : 0\n"
         "Security       : auto\n"
-        "network        : ws,grpc,upgrade,tcp\n"
+        "network        : ws,grpc,upgrade,tcp,xhttp\n"
         "path ws        : /vmess - /whatever\n"
         "serviceName    : vmess\n"
         "path upgrade   : /upvmess\n"
@@ -1627,6 +1630,8 @@ def format_vmess_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
         f"<code>{h(up_tls)}</code>\n"
         f"<pre>————————————————————————————————————\n         VMESS Upgrade NO TLS\n————————————————————————————————————</pre>\n"
         f"<code>{h(up_notls)}</code>\n"
+        f"<pre>————————————————————————————————————\n              VMESS Xhttp\n————————————————————————————————————</pre>\n"
+        f"<code>{h(xh)}</code>\n"
         f"<pre>————————————————————————————————————</pre>"
     )
 
@@ -1679,6 +1684,7 @@ def format_trojan_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
     ws_tls = f"trojan://{uuid_str}@{host}:443?path=/trojan&security=tls&host={host}&type=ws&sni={host}#{remarks}"
     grpc_tls = f"trojan://{uuid_str}@{host}:443?mode=gun&security=tls&type=grpc&serviceName=trojan&sni={host}#{remarks}"
     up_tls = f"trojan://{uuid_str}@{host}:443?path=/uptrojan&security=tls&host={host}&type=httpupgrade&sni={host}#{remarks}"
+    xh = f"trojan://{uuid_str}@{host}:443?path=/xtrojan&security=tls&host={host}&type=xhttp&sni={host}#{remarks}"
 
     top_box = (
         "————————————————————————————————————\n"
@@ -1691,7 +1697,7 @@ def format_trojan_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
         "Port         : 443,8443\n"
         "Port any     : 2052,2053,8880\n"
         f"Key          : {h(uuid_str)}\n"
-        "Network      : ws,grpc,upgrade\n"
+        "Network      : ws,grpc,upgrade,xhttp\n"
         "Path ws      : /trojan\n"
         "serviceName  : trojan\n"
         "Path upgrade : /uptrojan\n"
@@ -1706,6 +1712,8 @@ def format_trojan_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
         f"<code>{h(grpc_tls)}</code>\n"
         f"<pre>————————————————————————————————————\n          TROJAN Upgrade TLS\n————————————————————————————————————</pre>\n"
         f"<code>{h(up_tls)}</code>\n"
+        f"<pre>————————————————————————————————————\n             TROJAN Xhttp\n————————————————————————————————————</pre>\n"
+        f"<code>{h(xh)}</code>\n"
         f"<pre>————————————————————————————————————\nExpired On  : {h(expired)}\n————————————————————————————————————</pre>"
     )
 
@@ -2768,12 +2776,14 @@ def install_full_remote_vps_sync(srv_row):
                 {"tag": "vmess-ws", "listen": "127.0.0.1", "port": 10001, "protocol": "vmess", "settings": {"clients": []}, "streamSettings": {"network": "ws", "wsSettings": {"path": "/vmess"}}},
                 {"tag": "vmess-grpc", "listen": "127.0.0.1", "port": 10002, "protocol": "vmess", "settings": {"clients": []}, "streamSettings": {"network": "grpc", "grpcSettings": {"serviceName": "vmess"}}},
                 {"tag": "vmess-up", "listen": "127.0.0.1", "port": 10003, "protocol": "vmess", "settings": {"clients": []}, "streamSettings": {"network": "httpupgrade", "httpupgradeSettings": {"path": "/upvmess"}}},
+                {"tag": "vmess-xh", "listen": "127.0.0.1", "port": 10030, "protocol": "vmess", "settings": {"clients": []}, "streamSettings": {"network": "xhttp", "xhttpSettings": {"path": "/xvmess"}}},
                 {"tag": "vless-ws", "listen": "127.0.0.1", "port": 10004, "protocol": "vless", "settings": {"clients": [], "decryption": "none"}, "streamSettings": {"network": "ws", "wsSettings": {"path": "/vless"}}},
                 {"tag": "vless-grpc", "listen": "127.0.0.1", "port": 10005, "protocol": "vless", "settings": {"clients": [], "decryption": "none"}, "streamSettings": {"network": "grpc", "grpcSettings": {"serviceName": "vless"}}},
                 {"tag": "vless-up", "listen": "127.0.0.1", "port": 10006, "protocol": "vless", "settings": {"clients": [], "decryption": "none"}, "streamSettings": {"network": "xhttp", "xhttpSettings": {"path": "/xvless"}}},
                 {"tag": "trojan-ws", "listen": "127.0.0.1", "port": 10007, "protocol": "trojan", "settings": {"clients": []}, "streamSettings": {"network": "ws", "wsSettings": {"path": "/trojan"}}},
                 {"tag": "trojan-grpc", "listen": "127.0.0.1", "port": 10008, "protocol": "trojan", "settings": {"clients": []}, "streamSettings": {"network": "grpc", "grpcSettings": {"serviceName": "trojan"}}},
                 {"tag": "trojan-up", "listen": "127.0.0.1", "port": 10009, "protocol": "trojan", "settings": {"clients": []}, "streamSettings": {"network": "httpupgrade", "httpupgradeSettings": {"path": "/uptrojan"}}},
+                {"tag": "trojan-xh", "listen": "127.0.0.1", "port": 10031, "protocol": "trojan", "settings": {"clients": []}, "streamSettings": {"network": "xhttp", "xhttpSettings": {"path": "/xtrojan"}}},
                 {"tag": "ss-ws", "listen": "127.0.0.1", "port": 10010, "protocol": "shadowsocks", "settings": {"method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp"}, "streamSettings": {"network": "ws", "wsSettings": {"path": "/ss-ws"}}},
                 {"tag": "ss-grpc", "listen": "127.0.0.1", "port": 10011, "protocol": "shadowsocks", "settings": {"method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp"}, "streamSettings": {"network": "grpc", "grpcSettings": {"serviceName": "ss-grpc"}}},
                 {"tag": "vmess-tcp", "listen": "127.0.0.1", "port": 10020, "protocol": "vmess", "settings": {"clients": []}, "streamSettings": {"network": "tcp"}},
@@ -4413,11 +4423,13 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
         l_grpc = engine.make_vmess_b64(uname, host, 443, secret, "grpc", "vmess", "tls")
         l_uptls = engine.make_vmess_b64(uname, host, 443, secret, "httpupgrade", "/upvmess", "tls")
         l_upntls = engine.make_vmess_b64(uname, host, 80, secret, "httpupgrade", "/upvmess", "none")
+        l_xh = engine.make_vmess_b64(uname, host, 443, secret, "xhttp", "/xvmess", "tls")
         kb_rows.extend([
             [make_copy_btn("📋 Salin UUID", secret, f"cp:{acc_id}:uuid")],
             [make_copy_btn("📋 Salin WS TLS", l_wstls, f"cp:{acc_id}:wstls"), make_copy_btn("📋 Salin WS No-TLS", l_wsntls, f"cp:{acc_id}:wsntls")],
             [make_copy_btn("📋 Salin gRPC", l_grpc, f"cp:{acc_id}:grpc"), make_copy_btn("📋 Salin Upgrade TLS", l_uptls, f"cp:{acc_id}:uptls")],
             [make_copy_btn("📋 Salin Upgrade No-TLS", l_upntls, f"cp:{acc_id}:upntls")],
+            [make_copy_btn("📋 Salin VMess Xhttp", l_xh, f"cp:{acc_id}:vmxh")],
             [make_copy_btn("🌐 Salin SlowDNS (NTLS)", l_wstls, f"cp:{acc_id}:sdntls")]
         ])
     elif proto == "vless":
@@ -4439,10 +4451,12 @@ def build_account_details_and_kb(acc_row, srv_row, back_target="back_home"):
         l_wstls = f"trojan://{secret}@{host}:443?path=/trojan&security=tls&host={host}&type=ws&sni={host}#{uname}"
         l_grpc = f"trojan://{secret}@{host}:443?mode=gun&security=tls&type=grpc&serviceName=trojan&sni={host}#{uname}"
         l_uptls = f"trojan://{secret}@{host}:443?path=/uptrojan&security=tls&host={host}&type=httpupgrade&sni={host}#{uname}"
+        l_xh = f"trojan://{secret}@{host}:443?path=/xtrojan&security=tls&host={host}&type=xhttp&sni={host}#{uname}"
         kb_rows.extend([
             [make_copy_btn("📋 Salin Key / UUID", secret, f"cp:{acc_id}:uuid")],
             [make_copy_btn("📋 Salin WS TLS", l_wstls, f"cp:{acc_id}:wstls"), make_copy_btn("📋 Salin gRPC", l_grpc, f"cp:{acc_id}:grpc")],
             [make_copy_btn("📋 Salin Upgrade TLS", l_uptls, f"cp:{acc_id}:uptls")],
+            [make_copy_btn("📋 Salin Trojan Xhttp", l_xh, f"cp:{acc_id}:trjxh")],
             [make_copy_btn("🌐 Salin SlowDNS (NTLS)", l_wstls, f"cp:{acc_id}:sdntls")]
         ])
 
@@ -5031,6 +5045,8 @@ async def cb_copy_fallback(cb: CallbackQuery):
         elif part == "grpc": val = engine.make_vmess_b64(uname, host, 443, secret, "grpc", "vmess", "tls")
         elif part == "uptls": val = engine.make_vmess_b64(uname, host, 443, secret, "httpupgrade", "/upvmess", "tls")
         elif part == "upntls": val = engine.make_vmess_b64(uname, host, 80, secret, "httpupgrade", "/upvmess", "none")
+        elif part == "vmxh": val = engine.make_vmess_b64(uname, host, 443, secret, "xhttp", "/xvmess", "tls")
+        elif part == "trjxh": val = f"trojan://{secret}@{host}:443?path=/xtrojan&security=tls&host={host}&type=xhttp&sni={host}#{uname}"
     await cb.message.answer(f"Ketuk teks di bawah untuk menyalin:\n<code>{html.escape(val)}</code>", parse_mode="HTML")
     await cb.answer("Teks siap disalin!")
 
@@ -10147,12 +10163,14 @@ cat << 'EOXRAY' > /etc/xray/config.json
     { "tag": "vmess-ws", "listen": "127.0.0.1", "port": 10001, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/vmess" } } },
     { "tag": "vmess-grpc", "listen": "127.0.0.1", "port": 10002, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "vmess" } } },
     { "tag": "vmess-up", "listen": "127.0.0.1", "port": 10003, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "httpupgrade", "httpupgradeSettings": { "path": "/upvmess" } } },
+    { "tag": "vmess-xh", "listen": "127.0.0.1", "port": 10030, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "xhttp", "xhttpSettings": { "path": "/xvmess" } } },
     { "tag": "vless-ws", "listen": "127.0.0.1", "port": 10004, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } } },
     { "tag": "vless-grpc", "listen": "127.0.0.1", "port": 10005, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "vless" } } },
     { "tag": "vless-up", "listen": "127.0.0.1", "port": 10006, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "xhttp", "xhttpSettings": { "path": "/xvless" } } },
     { "tag": "trojan-ws", "listen": "127.0.0.1", "port": 10007, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/trojan" } } },
     { "tag": "trojan-grpc", "listen": "127.0.0.1", "port": 10008, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "trojan" } } },
     { "tag": "trojan-up", "listen": "127.0.0.1", "port": 10009, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "httpupgrade", "httpupgradeSettings": { "path": "/uptrojan" } } },
+    { "tag": "trojan-xh", "listen": "127.0.0.1", "port": 10031, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "xhttp", "xhttpSettings": { "path": "/xtrojan" } } },
     { "tag": "ss-ws", "listen": "127.0.0.1", "port": 10010, "protocol": "shadowsocks", "settings": { "method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp" }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/ss-ws" } } },
     { "tag": "ss-grpc", "listen": "127.0.0.1", "port": 10011, "protocol": "shadowsocks", "settings": { "method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp" }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "ss-grpc" } } },
     { "tag": "vmess-tcp", "listen": "127.0.0.1", "port": 10020, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "tcp" } },
@@ -11040,6 +11058,8 @@ http {
         error_page 418 = @probe_ok;
         location = /vmess { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
 location = /xvless { proxy_pass http://127.0.0.1:10006; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; proxy_request_buffering off; }
+location = /xvmess { proxy_pass http://127.0.0.1:10030; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; proxy_request_buffering off; }
+location = /xtrojan { proxy_pass http://127.0.0.1:10031; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; proxy_request_buffering off; }
         location = /vless { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
         location = /trojan { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
         location = /ss-ws { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
@@ -11270,6 +11290,8 @@ http {
         error_page 418 = @probe_ok;
         location = /vmess { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
 location = /xvless { proxy_pass http://127.0.0.1:10006; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; proxy_request_buffering off; }
+location = /xvmess { proxy_pass http://127.0.0.1:10030; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; proxy_request_buffering off; }
+location = /xtrojan { proxy_pass http://127.0.0.1:10031; proxy_http_version 1.1; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; proxy_request_buffering off; }
         location = /vless { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
         location = /trojan { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
         location = /ss-ws { proxy_pass http://127.0.0.1:10015; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection $connection_upgrade; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_read_timeout 86400s; proxy_send_timeout 86400s; proxy_buffering off; }
@@ -11377,12 +11399,14 @@ cat << 'EOXRAY' > /etc/xray/config.json
     { "tag": "vmess-ws", "listen": "127.0.0.1", "port": 10001, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/vmess" } } },
     { "tag": "vmess-grpc", "listen": "127.0.0.1", "port": 10002, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "vmess" } } },
     { "tag": "vmess-up", "listen": "127.0.0.1", "port": 10003, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "httpupgrade", "httpupgradeSettings": { "path": "/upvmess" } } },
+    {"tag": "vmess-xh", "listen": "127.0.0.1", "port": 10030, "protocol": "vmess", "settings": {"clients": []}, "streamSettings": {"network": "xhttp", "xhttpSettings": {"path": "/xvmess"}}},
     { "tag": "vless-ws", "listen": "127.0.0.1", "port": 10004, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } } },
     { "tag": "vless-grpc", "listen": "127.0.0.1", "port": 10005, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "vless" } } },
     { "tag": "vless-up", "listen": "127.0.0.1", "port": 10006, "protocol": "vless", "settings": { "clients": [], "decryption": "none" }, "streamSettings": { "network": "xhttp", "xhttpSettings": { "path": "/xvless" } } },
     { "tag": "trojan-ws", "listen": "127.0.0.1", "port": 10007, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/trojan" } } },
     { "tag": "trojan-grpc", "listen": "127.0.0.1", "port": 10008, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "trojan" } } },
     { "tag": "trojan-up", "listen": "127.0.0.1", "port": 10009, "protocol": "trojan", "settings": { "clients": [] }, "streamSettings": { "network": "httpupgrade", "httpupgradeSettings": { "path": "/uptrojan" } } },
+    {"tag": "trojan-xh", "listen": "127.0.0.1", "port": 10031, "protocol": "trojan", "settings": {"clients": []}, "streamSettings": {"network": "xhttp", "xhttpSettings": {"path": "/xtrojan"}}},
     { "tag": "ss-ws", "listen": "127.0.0.1", "port": 10010, "protocol": "shadowsocks", "settings": { "method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp" }, "streamSettings": { "network": "ws", "wsSettings": { "path": "/ss-ws" } } },
     { "tag": "ss-grpc", "listen": "127.0.0.1", "port": 10011, "protocol": "shadowsocks", "settings": { "method": "chacha20-ietf-poly1305", "password": "sunek-ss-default-key", "network": "tcp,udp" }, "streamSettings": { "network": "grpc", "grpcSettings": { "serviceName": "ss-grpc" } } },
     { "tag": "vmess-tcp", "listen": "127.0.0.1", "port": 10020, "protocol": "vmess", "settings": { "clients": [] }, "streamSettings": { "network": "tcp" } },
