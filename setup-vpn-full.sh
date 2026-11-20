@@ -1642,7 +1642,7 @@ def format_vless_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
     ws_notls = f"vless://{uuid_str}@{host}:80?path=/vless&security=none&encryption=none&host={host}&type=ws#{remarks}"
     grpc_tls = f"vless://{uuid_str}@{host}:443?mode=gun&security=tls&encryption=none&type=grpc&serviceName=vless&sni={host}#{remarks}"
     up_tls = f"vless://{uuid_str}@{host}:443?path=/upvless&security=tls&encryption=none&host={host}&type=httpupgrade&sni={host}#{remarks}"
-    up_notls = f"vless://{uuid_str}@{host}:443?path=/xvless&security=tls&encryption=none&host={host}&type=xhttp&sni={host}#{remarks}"
+    up_notls = f"vless://{uuid_str}@{host}:443?encryption=none&security=tls&sni={host}&alpn=h2,http/1.1&type=xhttp&host={host}&path=/xvless&mode=auto#{remarks}"
 
     top_box = (
         "————————————————————————————————————\n"
@@ -1685,7 +1685,7 @@ def format_trojan_html(remarks, city, isp, host, uuid_str, expired, ip_limit=2):
     ws_tls = f"trojan://{uuid_str}@{host}:443?path=/trojan&security=tls&host={host}&type=ws&sni={host}#{remarks}"
     grpc_tls = f"trojan://{uuid_str}@{host}:443?mode=gun&security=tls&type=grpc&serviceName=trojan&sni={host}#{remarks}"
     up_tls = f"trojan://{uuid_str}@{host}:443?path=/uptrojan&security=tls&host={host}&type=httpupgrade&sni={host}#{remarks}"
-    xh = f"trojan://{uuid_str}@{host}:443?path=/xtrojan&security=tls&host={host}&type=xhttp&sni={host}#{remarks}"
+    xh = f"trojan://{uuid_str}@{host}:443?security=tls&sni={host}&alpn=h2,http/1.1&type=xhttp&host={host}&path=/xtrojan&mode=auto#{remarks}"
 
     top_box = (
         "————————————————————————————————————\n"
