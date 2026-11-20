@@ -4797,68 +4797,22 @@ def main_menu_kb(user_id: int):
         buttons.append([InlineKeyboardButton(text="⚙️ Panel Admin", callback_data="admin_home")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def _adm_sub_back(cb):
+    return [[InlineKeyboardButton(text="⬅️ Kembali ke Panel Admin", callback_data="admin_home")]]
+
 def admin_menu_kb():
-    bot_on = get_setting("bot_status", "1") == "1"
-    bot_lbl = "🤖 Status Bot: ON 🟢" if bot_on else "🤖 Status Bot: OFF 🔴"
-    heal_on = get_setting("auto_heal_enabled", "1") == "1"
-    heal_lbl = "🩺 Auto-Heal: ON 🟢" if heal_on else "🩺 Auto-Heal: OFF 🔴"
-    pfx_on = get_setting("prefix_enabled", "1") == "1"
-    pfx_val = get_setting("account_prefix", "sunek").strip().strip("-") or "sunek"
-    pfx_lbl = f"🏷️ Prefix: ON ({pfx_val}-) 🟢" if pfx_on else "🏷️ Prefix Akun: OFF 🔴"
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🖥️ INFO VPS", callback_data="adm_info_vps"),
-            InlineKeyboardButton(text="🔧 SSL & Services", callback_data="adm_ssl_services")
+            InlineKeyboardButton(text="🖥️ Server & Status", callback_data="adm_cat_server"),
+            InlineKeyboardButton(text="👥 Akun & User", callback_data="adm_cat_user")
         ],
         [
-            InlineKeyboardButton(text=bot_lbl, callback_data="adm_toggle_bot"),
-            InlineKeyboardButton(text=heal_lbl, callback_data="adm_autoheal_menu")
+            InlineKeyboardButton(text="🔒 Keamanan & Batasan", callback_data="adm_cat_security"),
+            InlineKeyboardButton(text="🎨 Tampilan & Konten", callback_data="adm_cat_ui")
         ],
         [
-            InlineKeyboardButton(text=pfx_lbl, callback_data="adm_prefix_menu")
-        ],
-        [
-            InlineKeyboardButton(text="🌐 Change Domain VPS", callback_data="adm_chg_domain_menu"),
-            InlineKeyboardButton(text="🔄 Reset Limit Semua User", callback_data="adm_reset_all_quotas")
-        ],
-        [
-            InlineKeyboardButton(text="🟢 Cek User Online", callback_data="adm_online"),
-            InlineKeyboardButton(text="📊 Auto-Report Login Grup", callback_data="adm_login_rep_menu")
-        ],
-        [
-            InlineKeyboardButton(text="🔓 Unlock Limit IP", callback_data="adm_unlock_list")
-        ],
-        [
-            InlineKeyboardButton(text="👥 Kelola Admin", callback_data="adm_admin_list"),
-        InlineKeyboardButton(text="👥 Kelola User & ID", callback_data="adm_users"),
-            InlineKeyboardButton(text="🗑️ Hapus Semua Akun", callback_data="adm_del_all_menu")
-        ],
-        [
-            InlineKeyboardButton(text="🔒 Pengaturan Lock", callback_data="adm_lock_cfg"),
-            InlineKeyboardButton(text="⚙️ Durasi, Kuota & Limit Buat", callback_data="adm_limits_cfg")
-        ],
-        [
-            InlineKeyboardButton(text="⚙️ SlowDNS & UDP-Custom", callback_data="adm_slowdns_udp")
-        ],
-        [
-            InlineKeyboardButton(text="🖥️ Kelola Multi-VPS", callback_data="adm_vps"),
-            InlineKeyboardButton(text="🌍 Relay Multi-Negara", callback_data="adm_relays")
-        ],
-        [
-            InlineKeyboardButton(text="🐞 Kelola Preset Bug", callback_data="adm_bugs_menu"),
-            InlineKeyboardButton(text="📝 Banner HTML & Bug", callback_data="adm_banner_cfg")
-        ],
-        [
-            InlineKeyboardButton(text="📢 Wajib Join & Set Topic", callback_data="adm_group_cfg"),
-            InlineKeyboardButton(text="🖼️ Set Welcome (Teks/Foto)", callback_data="adm_welcome_cfg")
-        ],
-        [
-            InlineKeyboardButton(text="🎨 Ganti Tema Bot", callback_data="adm_theme_menu"),
-            InlineKeyboardButton(text="📣 Broadcast User", callback_data="adm_broadcast_menu")
-        ],
-        [
-            InlineKeyboardButton(text="📦 Kirim Full Script Portable", callback_data="adm_send_backup"),
-            InlineKeyboardButton(text="📋 Log Aktivitas", callback_data="adm_logs")
+            InlineKeyboardButton(text="🌐 Jaringan & Integrasi", callback_data="adm_cat_network"),
+            InlineKeyboardButton(text="⚙️ Alat & Lainnya", callback_data="adm_cat_tools")
         ],
         [
             InlineKeyboardButton(text="⬅️ Kembali ke Menu Utama", callback_data="back_home")
@@ -5644,6 +5598,167 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
                     pass
     except Exception as e:
         await msg_obj.answer(f"❌ Gagal membuat akun: <code>{html.escape(str(e))}</code>", parse_mode="HTML")
+
+
+# === SUBMENU KATEGORI ADMIN (mengelompokkan 27 fitur menjadi 6 kategori) ===
+
+@router.callback_query(F.data == "adm_cat_server")
+async def cb_adm_cat_server(cb: CallbackQuery, state: FSMContext = None):
+    if not is_admin(cb.from_user.id):
+        return
+    if state: await state.clear()
+    bot_on = get_setting("bot_status", "1") == "1"
+    heal_on = get_setting("auto_heal_enabled", "1") == "1"
+    txt = (
+        "<b>🖥️ SERVER & STATUS</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• Bot: {'🟢 ON' if bot_on else '🔴 OFF'}\n"
+        f"• Auto-Heal: {'🟢 ON' if heal_on else '🔴 OFF'}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Kelola server & pantau status:"
+    )
+    kb = [
+        [
+            InlineKeyboardButton(text="🖥️ INFO VPS", callback_data="adm_info_vps"),
+            InlineKeyboardButton(text="🟢 Cek User Online", callback_data="adm_online")
+        ],
+        [
+            InlineKeyboardButton(text="🤖 Status Bot", callback_data="adm_toggle_bot"),
+            InlineKeyboardButton(text="🩺 Auto-Heal", callback_data="adm_autoheal_menu")
+        ],
+        [
+            InlineKeyboardButton(text="🖥️ Kelola Multi-VPS", callback_data="adm_vps"),
+            InlineKeyboardButton(text="🌍 Relay Multi-Negara", callback_data="adm_relays")
+        ]
+    ]
+    kb += _adm_sub_back(cb)
+    await safe_edit_Basic(cb, txt, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+
+@router.callback_query(F.data == "adm_cat_user")
+async def cb_adm_cat_user(cb: CallbackQuery, state: FSMContext = None):
+    if not is_admin(cb.from_user.id):
+        return
+    if state: await state.clear()
+    pfx_on = get_setting("prefix_enabled", "1") == "1"
+    pfx_val = get_setting("account_prefix", "sunek").strip().strip("-") or "sunek"
+    txt = (
+        "<b>👥 AKUN & USER</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• Prefix: {'🟢 ON (' + pfx_val + '-)' if pfx_on else '🔴 OFF'}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Kelola admin, user, dan kuota:"
+    )
+    kb = [
+        [
+            InlineKeyboardButton(text="👥 Kelola Admin", callback_data="adm_admin_list"),
+            InlineKeyboardButton(text="👥 Kelola User & ID", callback_data="adm_users")
+        ],
+        [
+            InlineKeyboardButton(text="🏷️ Prefix Akun", callback_data="adm_prefix_menu")
+        ],
+        [
+            InlineKeyboardButton(text="🔄 Reset Limit Semua User", callback_data="adm_reset_all_quotas"),
+            InlineKeyboardButton(text="🗑️ Hapus Semua Akun", callback_data="adm_del_all_menu")
+        ]
+    ]
+    kb += _adm_sub_back(cb)
+    await safe_edit_Basic(cb, txt, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+
+@router.callback_query(F.data == "adm_cat_security")
+async def cb_adm_cat_security(cb: CallbackQuery, state: FSMContext = None):
+    if not is_admin(cb.from_user.id):
+        return
+    if state: await state.clear()
+    txt = (
+        "<b>🔒 KEAMANAN & BATASAN</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Atur durasi, kuota, lock, dan limit IP:"
+    )
+    kb = [
+        [
+            InlineKeyboardButton(text="🔒 Pengaturan Lock", callback_data="adm_lock_cfg"),
+            InlineKeyboardButton(text="⚙️ Durasi, Kuota & Limit Buat", callback_data="adm_limits_cfg")
+        ],
+        [
+            InlineKeyboardButton(text="🔓 Unlock Limit IP", callback_data="adm_unlock_list"),
+            InlineKeyboardButton(text="📊 Auto-Report Login Grup", callback_data="adm_login_rep_menu")
+        ]
+    ]
+    kb += _adm_sub_back(cb)
+    await safe_edit_Basic(cb, txt, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+
+@router.callback_query(F.data == "adm_cat_ui")
+async def cb_adm_cat_ui(cb: CallbackQuery, state: FSMContext = None):
+    if not is_admin(cb.from_user.id):
+        return
+    if state: await state.clear()
+    txt = (
+        "<b>🎨 TAMPILAN & KONTEN</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Kustomisasi tampilan bot & welcome:"
+    )
+    kb = [
+        [
+            InlineKeyboardButton(text="🎨 Ganti Tema Bot", callback_data="adm_theme_menu"),
+            InlineKeyboardButton(text="🖼️ Set Welcome (Teks/Foto)", callback_data="adm_welcome_cfg")
+        ],
+        [
+            InlineKeyboardButton(text="🐞 Kelola Preset Bug", callback_data="adm_bugs_menu"),
+            InlineKeyboardButton(text="📝 Banner HTML & Bug", callback_data="adm_banner_cfg")
+        ]
+    ]
+    kb += _adm_sub_back(cb)
+    await safe_edit_Basic(cb, txt, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+
+@router.callback_query(F.data == "adm_cat_network")
+async def cb_adm_cat_network(cb: CallbackQuery, state: FSMContext = None):
+    if not is_admin(cb.from_user.id):
+        return
+    if state: await state.clear()
+    txt = (
+        "<b>🌐 JARINGAN & INTEGRASI</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Kelola domain, jaringan kustom, & grup:"
+    )
+    kb = [
+        [
+            InlineKeyboardButton(text="🌐 Change Domain VPS", callback_data="adm_chg_domain_menu"),
+            InlineKeyboardButton(text="⚙️ SlowDNS & UDP-Custom", callback_data="adm_slowdns_udp")
+        ],
+        [
+            InlineKeyboardButton(text="📢 Wajib Join & Set Topic", callback_data="adm_group_cfg")
+        ]
+    ]
+    kb += _adm_sub_back(cb)
+    await safe_edit_Basic(cb, txt, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+
+@router.callback_query(F.data == "adm_cat_tools")
+async def cb_adm_cat_tools(cb: CallbackQuery, state: FSMContext = None):
+    if not is_admin(cb.from_user.id):
+        return
+    if state: await state.clear()
+    txt = (
+        "<b>⚙️ ALAT & LAINNYA</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Broadcast, backup script, dan log:"
+    )
+    kb = [
+        [
+            InlineKeyboardButton(text="📣 Broadcast User", callback_data="adm_broadcast_menu"),
+            InlineKeyboardButton(text="📦 Kirim Full Script Portable", callback_data="adm_send_backup")
+        ],
+        [
+            InlineKeyboardButton(text="📋 Log Aktivitas", callback_data="adm_logs")
+        ]
+    ]
+    kb += _adm_sub_back(cb)
+    await safe_edit_Basic(cb, txt, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
 
 @router.callback_query(F.data == "admin_home")
 async def cb_admin_home(cb: CallbackQuery, state: FSMContext = None):
