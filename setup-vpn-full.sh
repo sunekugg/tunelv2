@@ -3977,9 +3977,11 @@ import asyncio
 import base64
 import hashlib
 import html
+import json
 import os
 import random
 import re
+import socket
 import sqlite3
 import subprocess
 import time
@@ -4324,6 +4326,7 @@ class FormState(StatesGroup):
     vps_edit_port = State()
     vps_edit_pass = State()
     user_bug_scanner = State()
+    user_proxy_check = State()
     admin_change_domain_input = State()
     admin_wj_step1_target = State()
     admin_wj_step2_link = State()
@@ -4737,6 +4740,57 @@ def sanitize_tg_html(text: str) -> str:
         return ""
     return re.sub(r"&(?!(?:amp|lt|gt|quot|#\d+);)", "&amp;", str(text))
 
+_COUNTRY_FLAG_EXCEPTIONS = {
+    "XK": "🇽🇰",  # Kosovo: bukan kode ISO-3166 resmi, tanpa emoji regional resmi
+}
+
+def country_flag(code: str) -> str:
+    c = (code or "").strip().upper()
+    if len(c) == 2 and c.isalpha():
+        if c in _COUNTRY_FLAG_EXCEPTIONS:
+            return _COUNTRY_FLAG_EXCEPTIONS[c]
+        return "".join(chr(0x1F1E6 + ord(ch) - 65) for ch in c)
+    return ""
+
+def split_proxy_hostport(raw: str):
+    s = (raw or "").strip()
+    s = re.sub(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://", "", s)
+    s = s.split("/")[0]
+    host, port = s, 443
+    if s.count(":") == 1:  # host:port (bukan IPv6)
+        h, _, p = s.partition(":")
+        if h and p.isdigit():
+            host, port = h, int(p)
+    if not host or not any(ch.isalnum() for ch in host):
+        return None, 0
+    return host, port
+
+def fetch_proxy_info_sync(host: str) -> dict:
+    """Geo lookup via ip-api.com. Sinkron (urllib), dibungkus to_thread oleh pemanggil."""
+    url = ("http://ip-api.com/json/" + urllib.parse.quote(host, safe=".")
+           + "?fields=status,message,proxy,hosting,isp,org,as,country,countryCode,city,regionName")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        if data.get("status") == "success":
+            return data
+    except Exception:
+        pass
+    return {}
+
+def tcp_latency_sync(host: str, port: int, ports: list) -> int:
+    """Latency = waktu TCP connect. Coba port proxy dulu, fallback 443 lalu 80. -1 = timeout."""
+    for p in ports:
+        t0 = time.perf_counter()
+        try:
+            s = socket.create_connection((host, p), timeout=4.0)
+            s.close()
+            return int((time.perf_counter() - t0) * 1000)
+        except Exception:
+            continue
+    return -1
+
 async def safe_edit_Basic(cb: CallbackQuery, text: str, reply_markup=None, parse_mode="HTML"):
     if parse_mode == "HTML":
         text = sanitize_tg_html(text)
@@ -4779,7 +4833,8 @@ def main_menu_kb(user_id: int):
             InlineKeyboardButton(text=c_btn["trojan"], callback_data="create:trojan:0")
         ],
         [
-            InlineKeyboardButton(text="🌐 Cek Status Bug / Host ISP", callback_data="bug_scanner_start")
+            InlineKeyboardButton(text="🌐 Cek Status Bug / Host ISP", callback_data="bug_scanner_start"),
+            InlineKeyboardButton(text="🌐 CEK IP PROXY", callback_data="proxy_check_start"),
         ],
         [
             InlineKeyboardButton(text="💉 Inject Akun Luar", callback_data="ext_inject_start"),
@@ -8541,6 +8596,93 @@ async def cb_do_move_srv(cb: CallbackQuery):
 # FITUR V11: PRO BUG SCANNER ISP, CHANGE DOMAIN, TEMA BOT & AUTO-HEAL MONITOR
 # ==============================================================================
 SCAN_COOLDOWN_MAP = {}
+
+@router.callback_query(F.data == "proxy_check_start")
+async def cb_proxy_check_start(cb: CallbackQuery, state: FSMContext):
+    allowed, reason = check_user_access(cb.from_user.id)
+    if not allowed:
+        await cb.answer(reason, show_alert=True)
+        return
+    await state.clear()
+    await state.set_state(FormState.user_proxy_check)
+    txt = (
+        "🌐 <b>CEK IP PROXY</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Kirim <b>IP:Port</b> proxy untuk dicek lokasi, ISP, ASN &amp; latensinya.\n\n"
+        "📌 Contoh: <code>38.47.185.38:443</code>\n"
+        "<i>(boleh juga tanpa port, atau domain)</i>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 Kembali ke Menu Utama", callback_data="back_home")]
+    ])
+    await safe_edit_Basic(cb, txt, reply_markup=kb)
+
+
+@router.message(FormState.user_proxy_check)
+async def msg_user_proxy_check(msg: Message, state: FSMContext):
+    await state.clear()
+    raw = (msg.text or "").strip()
+    host, port = split_proxy_hostport(raw)
+    if not host:
+        await msg.answer("⚠️ Format tidak valid. Kirim <b>IP:Port</b>, contoh: <code>38.47.185.38:443</code>",
+                         parse_mode="HTML",
+                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                             [InlineKeyboardButton(text="🏠 Menu Utama", callback_data="back_home")]]))
+        return
+
+    wait = await msg.answer(
+        f"⏳ <i>Mengecek <code>{html.escape(host[:50])}</code> — lokasi, ISP, ASN &amp; latensi...</i>",
+        parse_mode="HTML")
+
+    info = await asyncio.to_thread(fetch_proxy_info_sync, host)
+    ports = [port] + [p for p in (443, 80) if p != port]
+    latency = await asyncio.to_thread(tcp_latency_sync, host, port, ports)
+    lat_str = f"{latency} ms" if latency >= 0 else "Timeout"
+    status_str = "ACTIVE ✅" if latency >= 0 else "DOWN ❌"
+
+    if info:
+        cc = (info.get("countryCode") or "").strip().upper()
+        isp = info.get("isp") or info.get("org") or "Tidak diketahui"
+        asn = (info.get("as") or "").split(" ")[0] or "Tidak diketahui"
+        country = info.get("country") or "Tidak diketahui"
+        city = info.get("city") or "-"
+        isp_lbl = f"({cc}) {isp} {country_flag(cc)}".strip()
+        out = (
+            "🌐 <b>HASIL CEK IP PROXY</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Proxy: <code>{html.escape(host)}</code>\n"
+            f"Port: <code>{port}</code>\n"
+            f"ISP: {html.escape(isp_lbl)}\n"
+            f"Country: {html.escape(country)}\n"
+            f"City: {html.escape(city)}\n"
+            f"Asn: {html.escape(asn)}\n"
+            f"Status: <b>{status_str}</b>\n"
+            f"Latency: <code>{lat_str}</code>"
+        )
+    else:
+        out = (
+            "🌐 <b>HASIL CEK IP PROXY</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Proxy: <code>{html.escape(host)}</code>\n"
+            f"Port: <code>{port}</code>\n"
+            f"ISP: Tidak tersedia\n"
+            f"Country: Tidak tersedia\n"
+            f"City: Tidak tersedia\n"
+            f"Asn: Tidak tersedia\n"
+            f"Status: <b>{status_str}</b>\n"
+            f"Latency: <code>{lat_str}</code>\n\n"
+            "<i>⚠️ Data lokasi/ISP tidak tersedia (geo lookup gagal)</i>"
+        )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 Cek IP Lain", callback_data="proxy_check_start"),
+         InlineKeyboardButton(text="🏠 Menu Utama", callback_data="back_home")]
+    ])
+    try:
+        await wait.edit_text(out, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await msg.answer(out, parse_mode="HTML", reply_markup=kb)
+
 
 @router.callback_query(F.data == "bug_scanner_start")
 async def cb_bug_scanner_start(cb: CallbackQuery, state: FSMContext):
