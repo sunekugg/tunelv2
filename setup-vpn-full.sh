@@ -1217,6 +1217,43 @@ _SAFE_SECRET = re.compile(r"^[^'\"\\`$;&|<>\n\r\t]{1,128}$")
 _SAFE_DOMAIN = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
 
 
+def _load_shared_ips() -> set:
+    """IP infrastruktur SHARED (proxy/tunnel ingress, mis. Cloudflare Spectrum) yang
+    tercatat di vpn-ws-map.log untuk BANYAK port berbeda. IP seperti ini bukan milik
+    satu HP — kalau ikut dihitung, 1 HP dianggap 2 IP (false multi-login).
+    Deteksi dinamis: IP yang hadir pada >=30% dari seluruh port berbeda = infrastruktur."""
+    from collections import defaultdict
+    port_ips = defaultdict(set)
+    try:
+        with open(WS_MAP_LOG, "r", errors="ignore") as f:
+            for ln in f.readlines()[-5000:]:
+                p = ln.strip().split("|")
+                if len(p) >= 3 and p[1].isdigit():
+                    port_ips[int(p[1])].add(p[2].strip())
+    except Exception:
+        return set()
+    if not port_ips:
+        return set()
+    cnt = defaultdict(int)
+    for ips in port_ips.values():
+        for ip in ips:
+            cnt[ip] += 1
+    threshold = max(1, int(len(port_ips) * 0.30))
+    return {ip for ip, n in cnt.items() if n >= threshold}
+
+
+_SHARED_IPS_CACHE = {"ips": set(), "ts": 0.0}
+
+
+def get_shared_ips() -> set:
+    """Cache 10 menit supaya tidak membaca ulang log tiap deteksi."""
+    now = time.time()
+    if now - _SHARED_IPS_CACHE["ts"] > 600:
+        _SHARED_IPS_CACHE["ips"] = _load_shared_ips()
+        _SHARED_IPS_CACHE["ts"] = now
+    return _SHARED_IPS_CACHE["ips"]
+
+
 def safe_username(name: str) -> str:
     """Validasi username Linux/Xray. Raise ValueError bila mengandung karakter shell."""
     if not isinstance(name, str) or not _SAFE_NAME.match(name):
@@ -1734,10 +1771,7 @@ def scan_active_sessions():
             if len(parts) >= 3:
                 try:
                     ts, lport, rip = float(parts[0]), parts[1], parts[2]
-                    # Port sumber TCP klien bisa dipakai-ulang koneksi berikutnya dengan
-                    # IP berbeda. Batasi mapping ke koneksi SEGAR (<=180s) agar port lama
-                    # tak menimpa IP baru — inilah sebab 1 HP terdeteksi multi-login.
-                    if now - ts < 180 and rip:
+                    if now - ts < 86400 and rip:
                         port_to_ip[lport] = rip
                 except Exception:
                     pass
@@ -1777,6 +1811,10 @@ def scan_active_sessions():
                     real_ip = src_ip
                     if src_ip.startswith("127.") or src_ip == "::1":
                         real_ip = port_to_ip.get(src_port, "")
+                    # Buang IP infrastruktur shared (proxy/tunnel ingress) agar 1 HP
+                    # tidak dihitung 2 IP -> false multi-login.
+                    if real_ip in get_shared_ips():
+                        continue
 
                     if real_ip and not real_ip.startswith("127."):
                         if src_port != "0":
@@ -1863,6 +1901,9 @@ def scan_active_sessions():
 
         # Loopback tanpa mapping = tunnel lokal/WS bridge, bukan IP client. Skip.
         if real_ip and not real_ip.startswith("127.") and real_ip != "::1":
+            # IP infrastruktur shared (proxy/tunnel ingress) bukan IP HP -> skip.
+            if real_ip in get_shared_ips():
+                continue
             info = results.setdefault(uname, {"ips": set(), "sessions": 0, "last_ip": real_ip})
             info["ips"].add(real_ip)
             info["sessions"] += 1
@@ -3436,13 +3477,6 @@ def get_active_sessions() -> dict:
             for ln in lines:
                 parts = ln.strip().split("|")
                 if len(parts) >= 3 and parts[1].isdigit():
-                    # Port sumber TCP klien dipakai-ulang koneksi berikutnya dgn IP lain.
-                    # Tanpa filter umur, mapping lama menimpa IP baru -> 1 HP terdeteksi multi.
-                    try:
-                        if now - int(parts[0]) > 180:
-                            continue
-                    except ValueError:
-                        pass
                     port_to_ip[int(parts[1])] = parts[2].strip()
         except Exception:
             pass
@@ -3499,13 +3533,21 @@ def get_active_sessions() -> dict:
                 if pid_num not in alive_db_pids or pid_num in exited_pids:
                     continue
                 if src_ip in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
-                    if est_ssh_lports and src_port not in est_ssh_lports:
+                    # HANYA sesi yang koneksinya MASIH established (TCP nyata ke :90).
+                    # Dulu dipakai logika terbalik: kalau est_ssh_lports kosong (tak ada
+                    # koneksi aktif) SEMUA auth di window log ikut dihitung -> user yang
+                    # reconnect tiap 40-60s dari IP seluler yang berputar dihitung multi IP
+                    # padahal 1 HP (false auto-lock berulang).
+                    if not est_ssh_lports or src_port not in est_ssh_lports:
                         continue
                     real_ip = port_to_ip.get(src_port, "").split(":")[0].strip()
                     if not real_ip or real_ip.startswith("127."):
                         continue
                 else:
                     real_ip = src_ip
+                # IP infrastruktur shared (proxy/tunnel ingress) bukan IP HP -> skip.
+                if real_ip in get_shared_ips():
+                    continue
                 u_list = ssh_sessions.setdefault(u_name, [])
                 if real_ip not in u_list:
                     u_list.append(real_ip)
@@ -3548,11 +3590,17 @@ def get_active_sessions() -> dict:
                         rip = port_to_ip.get(src_port, "").split(":")[0].strip()
                         if not rip or rip.startswith("127."):
                             continue
+                        # IP infrastruktur shared (proxy/tunnel ingress) bukan IP HP.
+                        if rip in get_shared_ips():
+                            continue
                         u_list = xray_sessions.setdefault(u_name, [])
                         if rip not in u_list:
                             u_list.append(rip)
                 else:
                     if is_recent and not src_ip.startswith("127."):
+                        # IP infrastruktur shared bukan IP HP.
+                        if src_ip in get_shared_ips():
+                            continue
                         u_list = xray_sessions.setdefault(u_name, [])
                         if src_ip not in u_list:
                             u_list.append(src_ip)
@@ -3773,10 +3821,7 @@ def get_detailed_login_data_local() -> dict:
                 parts = ln.strip().split("|")
                 if len(parts) >= 3 and parts[1].isdigit():
                     lp_num = int(parts[1])
-                    # Port sumber TCP dipakai-ulang dgn IP lain; mapping lama tak boleh
-                    # menimpa IP baru (sebab 1 HP terdeteksi multi-login). Window 180s.
-                    if parts[0].isdigit() and now_ts - int(parts[0]) > 180:
-                        continue
+
                     port_to_ip[lp_num] = parts[2].strip()
                     if parts[0].isdigit():
                         port_to_hms[lp_num] = time.strftime("%H:%M:%S", time.localtime(int(parts[0])))
@@ -3841,7 +3886,11 @@ def get_detailed_login_data_local() -> dict:
                 if pid_num not in alive_db_pids or pid_num in exited_pids:
                     continue
                 if src_ip in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
-                    if est_ssh_lports and src_port not in est_ssh_lports:
+                    # HANYA sesi yang koneksinya MASIH established (TCP nyata ke :90).
+                    # Logika lama terbalik: saat est_ssh_lports kosong SEMUA auth di
+                    # window log ikut dihitung -> reconnect tiap 40-60s dari IP seluler
+                    # berputar dihitung multi IP padahal 1 HP (false auto-lock berulang).
+                    if not est_ssh_lports or src_port not in est_ssh_lports:
                         continue
                     rip = port_to_ip.get(src_port, "").split(":")[0].strip()
                     hms = port_to_hms.get(src_port, now_hms)
