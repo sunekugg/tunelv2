@@ -4045,6 +4045,25 @@ DEFAULT_ISP = ENV_CONFIG.get("VPS_ISP", "DigitalOcean, LLC")
 
 DB_PATH = "/etc/vpn-bot/vpn_data.db"
 
+# Kecepatan bot (round-trip ms ke API Telegram), diukur background worker.
+# Dimulai -1 (belum terukur) -> caption menampilkan "mengukur...".
+_BOT_MS = {"v": -1, "ts": 0.0}
+
+def _measure_bot_ms() -> int:
+    """Satu kali round-trip getMe ke API Telegram. Return -1 bila gagal."""
+    t0 = time.perf_counter()
+    try:
+        req = urllib.request.Request(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe")
+        with urllib.request.urlopen(req, timeout=6) as r:
+            r.read()
+        return int((time.perf_counter() - t0) * 1000)
+    except Exception:
+        return -1
+
+def bot_ms_label() -> str:
+    v = _BOT_MS["v"]
+    return f"{v} ms" if v >= 0 else "mengukur..."
+
 def mask_str(s: str) -> str:
     if not s or s == "-":
         return "-"
@@ -4670,9 +4689,13 @@ def format_welcome_caption(user_id: int) -> str:
             "{server}": f"{srv_cnt} VPS ({total_acc} Akun Aktif)",
             "{akun_aktif}": str(total_acc),
             "{status_bot}": bot_st,
+            "{ms_bot}": bot_ms_label(),
         }
         for k, v in replacements.items():
             res = res.replace(k, v)
+        # Baris kecepatan bot otomatis: suntik bila teks custom tak memakai {ms_bot}
+        if "{ms_bot}" not in custom_tpl:
+            res += f"\n{b} ⚡ <b>Kecepatan Bot</b> : {bot_ms_label()}"
         if "Buat akun" not in res and "Aktif akun" not in res:
             res += (
                 f"\n{line_sep}\n"
@@ -4691,6 +4714,7 @@ def format_welcome_caption(user_id: int) -> str:
         f"{b} <b>Aktif akun</b>  : {aktif_akun_short}\n"
         f"{b} <b>Server</b>      : {srv_cnt} VPS ({total_acc} Akun Aktif)\n"
         f"{b} <b>Status Bot</b>  : {bot_st}\n"
+        f"{b} <b>MS Bot</b>      : {bot_ms_label()}\n"
         f"{line_sep}\n"
         "Silakan pilih menu layanan di bawah ini:"
     )
@@ -4837,8 +4861,8 @@ def main_menu_kb(user_id: int):
             InlineKeyboardButton(text="🛰️ CEK IP PROXY", callback_data="proxy_check_start"),
         ],
         [
-            InlineKeyboardButton(text="💉 Inject Akun Luar", callback_data="ext_inject_start"),
-            InlineKeyboardButton(text="🌐 List Wildcard", callback_data="list_wildcard_menu")
+            InlineKeyboardButton(text="🔄 SUBCONVERT", callback_data="ext_inject_start"),
+            InlineKeyboardButton(text="🧩 List Wildcard", callback_data="list_wildcard_menu")
         ],
         [
             InlineKeyboardButton(text="👤 Akun Saya", callback_data="my_accounts"),
@@ -8065,10 +8089,10 @@ async def cb_list_wildcard_menu(cb: CallbackQuery):
     for idx, b in enumerate(presets, 1):
         lines.append(f"{idx}. <code>{html.escape(b)}</code>")
     lines.append("\n────────────────────────────")
-    lines.append("💡 <i>Gunakan daftar di atas pada menu <b>🎯 Inject Bug</b> atau <b>💉 Inject Akun Luar</b>.</i>")
+    lines.append("💡 <i>Gunakan daftar di atas pada menu <b>🎯 Inject Bug</b> atau <b>🔄 SUBCONVERT</b>.</i>")
 
     kb_rows = [
-        [InlineKeyboardButton(text="💉 Inject Akun Luar", callback_data="ext_inject_start")],
+        [InlineKeyboardButton(text="🔄 SUBCONVERT", callback_data="ext_inject_start")],
         [InlineKeyboardButton(text="🏠 Kembali ke Menu Utama", callback_data="back_home")]
     ]
     if cb.from_user.id == ADMIN_ID:
@@ -8318,7 +8342,7 @@ async def render_external_injected(msg_or_cb, ext_acc: dict, mode: str, bug_val:
             InlineKeyboardButton(text="🎯 Ganti Bug", callback_data=f"ext_mode:{mode}")
         ],
         [
-            InlineKeyboardButton(text="💉 Inject Akun Luar Lainnya", callback_data="ext_inject_start"),
+            InlineKeyboardButton(text="🔄 SUBCONVERT Lainnya", callback_data="ext_inject_start"),
             InlineKeyboardButton(text="🏠 Menu Utama", callback_data="back_home")
         ]
     ])
@@ -8675,7 +8699,7 @@ async def msg_user_proxy_check(msg: Message, state: FSMContext):
         )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 Cek IP Lain", callback_data="proxy_check_start"),
+        [InlineKeyboardButton(text="🛰️ Cek IP Lain", callback_data="proxy_check_start"),
          InlineKeyboardButton(text="🏠 Menu Utama", callback_data="back_home")]
     ])
     try:
@@ -8708,7 +8732,7 @@ async def cb_bug_scanner_start(cb: CallbackQuery, state: FSMContext):
         "atau daftar bug ke bawah."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 Lihat List Wildcard", callback_data="list_wildcard_menu")],
+        [InlineKeyboardButton(text="🧩 Lihat List Wildcard", callback_data="list_wildcard_menu")],
         [InlineKeyboardButton(text="🏠 Kembali ke Menu Utama", callback_data="back_home")]
     ])
     await safe_edit_Basic(cb, txt, reply_markup=kb)
@@ -9531,6 +9555,21 @@ async def login_report_scheduler_worker():
 
 
 
+async def bot_ms_worker():
+    """Ukur kecepatan bot (round-trip ke API Telegram) tiap 60 detik, di background."""
+    while True:
+        _BOT_MS["v"] = await asyncio.to_thread(_measure_bot_ms)
+        _BOT_MS["ts"] = time.time()
+        await asyncio.sleep(60)
+
+def seed_bot_ms():
+    """Pengukuran awal sekali di startup, agar welcome pertama sudah punya angka nyata."""
+    try:
+        _BOT_MS["v"] = _measure_bot_ms()
+        _BOT_MS["ts"] = time.time()
+    except Exception:
+        pass
+
 async def auto_heal_monitor_worker():
     while True:
         await asyncio.sleep(60)
@@ -10028,10 +10067,12 @@ async def unlock_and_expiry_worker():
 
 async def main():
     init_db()
+    await asyncio.to_thread(seed_bot_ms)
     asyncio.create_task(scanner_multi_login_worker())
     asyncio.create_task(unlock_and_expiry_worker())
     asyncio.create_task(login_report_scheduler_worker())
     asyncio.create_task(auto_heal_monitor_worker())
+    asyncio.create_task(bot_ms_worker())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
