@@ -4475,6 +4475,7 @@ class ForceJoinMessage(BaseMiddleware):
         txt = getattr(event, "text", "") or ""
         first = txt.split()[0].lstrip("/").split("@")[0].lower() if txt else ""
         if first in _FJ_ALLOWED_MSG:
+            _FJ_CACHE.pop(uid, None)  # cek ulang keanggotaan terbaru saat /start
             return await handler(event, data)
         if not await _user_joined(uid):
             fj_txt, fj_kb = build_force_join_prompt()
@@ -4494,6 +4495,8 @@ class ForceJoinCallback(BaseMiddleware):
         cd = getattr(event, "data", "") or ""
         # back_home = tombol "Saya Sudah Bergabung" -> izinkan cek ulang
         if cd in ("back_home", "menu_main"):
+            # Hapus cache lama agar status keanggotaan baru langsung terbaca
+            _FJ_CACHE.pop(uid, None)
             return await handler(event, data)
         if not await _user_joined(uid):
             try:
