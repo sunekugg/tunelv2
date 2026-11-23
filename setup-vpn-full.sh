@@ -6658,7 +6658,7 @@ async def cb_adm_limits_cfg(cb: CallbackQuery):
     txt = (
         "<b>DURASI, KUOTA, SPEED & LIMIT BUAT</b>\n────────────────────────────\n"
         f"• Masa Aktif Reguler : <b>{_dur_lbl}</b>\n"
-        f"• Limit Buat Akun : <b>{get_int_setting('user_create_max', 1, 0)}x dalam {get_int_setting('user_create_days', 3, 1)} Hari</b>\n"
+        f"• Limit Buat Akun : <b>{'♾ Unlimited' if get_int_setting('user_create_max', 1, 0) <= 0 else str(get_int_setting('user_create_max', 1, 0)) + 'x dalam ' + str(get_int_setting('user_create_days', 3, 1)) + ' Hari'}</b>\n"
         f"• Limit IP : <b>{'♾ Unlimited' if get_int_setting('default_ip_limit', 2, 0) <= 0 else str(get_int_setting('default_ip_limit', 2, 0)) + ' IP'}</b> | Kuota: <b>{get_int_setting('default_quota_gb', 50, 0)} GB</b>\n"
         f"• Speed Limit : <b>{get_int_setting('default_speed_mbps', 0, 0)} Mbps</b> | Max User: <b>{get_int_setting('max_users_per_vps', 100, 1)}</b>"
     )
@@ -6670,6 +6670,7 @@ async def cb_adm_limits_cfg(cb: CallbackQuery):
         [InlineKeyboardButton(text="📦 Kuota (GB)", callback_data="set_cfg:default_quota_gb"), InlineKeyboardButton(text="🚀 Speed (Mbps)", callback_data="set_cfg:default_speed_mbps")],
         [InlineKeyboardButton(text="👥 Max User VPS", callback_data="set_cfg:max_users_per_vps"), InlineKeyboardButton(text="🔄 Reset Limit Semua User", callback_data="adm_reset_all_quotas")],
         [InlineKeyboardButton(text="♾ Limit IP Unlimited", callback_data="quick_unl:default_ip_limit"), InlineKeyboardButton(text="♾ Masa Aktif Unlimited", callback_data="quick_unl:default_days")],
+        [InlineKeyboardButton(text="♾ Buat Akun Unlimited", callback_data="quick_unl:user_create_max")],
         [InlineKeyboardButton(text="⬅️ Kembali ke Panel Admin", callback_data="admin_home")]
     ])
     await safe_edit_Basic(cb, txt, parse_mode="HTML", reply_markup=kb)
