@@ -1734,7 +1734,10 @@ def scan_active_sessions():
             if len(parts) >= 3:
                 try:
                     ts, lport, rip = float(parts[0]), parts[1], parts[2]
-                    if now - ts < 86400 and rip:
+                    # Port sumber TCP klien bisa dipakai-ulang koneksi berikutnya dengan
+                    # IP berbeda. Batasi mapping ke koneksi SEGAR (<=180s) agar port lama
+                    # tak menimpa IP baru — inilah sebab 1 HP terdeteksi multi-login.
+                    if now - ts < 180 and rip:
                         port_to_ip[lport] = rip
                 except Exception:
                     pass
@@ -3433,6 +3436,13 @@ def get_active_sessions() -> dict:
             for ln in lines:
                 parts = ln.strip().split("|")
                 if len(parts) >= 3 and parts[1].isdigit():
+                    # Port sumber TCP klien dipakai-ulang koneksi berikutnya dgn IP lain.
+                    # Tanpa filter umur, mapping lama menimpa IP baru -> 1 HP terdeteksi multi.
+                    try:
+                        if now - int(parts[0]) > 180:
+                            continue
+                    except ValueError:
+                        pass
                     port_to_ip[int(parts[1])] = parts[2].strip()
         except Exception:
             pass
@@ -3754,6 +3764,7 @@ def get_detailed_login_data_local() -> dict:
 
     port_to_ip = {}
     port_to_hms = {}
+    now_ts = int(time.time())
     if os.path.exists("/var/log/vpn-ws-map.log"):
         try:
             with open("/var/log/vpn-ws-map.log", "r", errors="ignore") as f:
@@ -3762,6 +3773,10 @@ def get_detailed_login_data_local() -> dict:
                 parts = ln.strip().split("|")
                 if len(parts) >= 3 and parts[1].isdigit():
                     lp_num = int(parts[1])
+                    # Port sumber TCP dipakai-ulang dgn IP lain; mapping lama tak boleh
+                    # menimpa IP baru (sebab 1 HP terdeteksi multi-login). Window 180s.
+                    if parts[0].isdigit() and now_ts - int(parts[0]) > 180:
+                        continue
                     port_to_ip[lp_num] = parts[2].strip()
                     if parts[0].isdigit():
                         port_to_hms[lp_num] = time.strftime("%H:%M:%S", time.localtime(int(parts[0])))
