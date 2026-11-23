@@ -4834,7 +4834,7 @@ def main_menu_kb(user_id: int):
         ],
         [
             InlineKeyboardButton(text="🌐 Cek Status Bug / Host ISP", callback_data="bug_scanner_start"),
-            InlineKeyboardButton(text="🌐 CEK IP PROXY", callback_data="proxy_check_start"),
+            InlineKeyboardButton(text="🛰️ CEK IP PROXY", callback_data="proxy_check_start"),
         ],
         [
             InlineKeyboardButton(text="💉 Inject Akun Luar", callback_data="ext_inject_start"),
@@ -8606,7 +8606,7 @@ async def cb_proxy_check_start(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.set_state(FormState.user_proxy_check)
     txt = (
-        "🌐 <b>CEK IP PROXY</b>\n"
+        "🛰️ <b>CEK IP PROXY</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "Kirim <b>IP:Port</b> proxy untuk dicek lokasi, ISP, ASN &amp; latensinya.\n\n"
         "📌 Contoh: <code>38.47.185.38:443</code>\n"
@@ -8648,7 +8648,7 @@ async def msg_user_proxy_check(msg: Message, state: FSMContext):
         city = info.get("city") or "-"
         isp_lbl = f"({cc}) {isp} {country_flag(cc)}".strip()
         out = (
-            "🌐 <b>HASIL CEK IP PROXY</b>\n"
+            "🛰️ <b>HASIL CEK IP PROXY</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             f"Proxy: <code>{html.escape(host)}</code>\n"
             f"Port: <code>{port}</code>\n"
@@ -8661,7 +8661,7 @@ async def msg_user_proxy_check(msg: Message, state: FSMContext):
         )
     else:
         out = (
-            "🌐 <b>HASIL CEK IP PROXY</b>\n"
+            "🛰️ <b>HASIL CEK IP PROXY</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             f"Proxy: <code>{html.escape(host)}</code>\n"
             f"Port: <code>{port}</code>\n"
