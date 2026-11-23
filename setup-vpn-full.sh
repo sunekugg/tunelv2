@@ -10979,11 +10979,13 @@ fi
 # 6. Buat Virtualenv Python & Aktifkan Semua Layanan
 echo "[6/6] Menyiapkan Python Virtualenv & menyalakan seluruh layanan..."
 python3 -m venv /etc/vpn-bot/venv
-# Pin aiogram <3.14: 3.14+ butuh Python >=3.9. Lantai OS target adalah
-# Ubuntu 20.04 (Python 3.8), jadi tanpa pin pip akan mengangkat aiogram terlalu
-# baru / tak cocok di 3.8. Kode memakai API 3.0 (Router/F/FSM/Command) yang
-# stabil, dan CopyTextButton sudah ada fallback ImportError.
-/etc/vpn-bot/venv/bin/pip install -U pip "aiogram>=3.0,<3.14" paramiko aiohttp >/dev/null
+# Pin aiogram: CopyTextButton (tombol salin native) butuh aiogram >=3.14, yang
+# butuh Python >=3.9. Lantai OS target adalah Ubuntu 20.04 (Python 3.8), jadi
+# pilih versi sesuai Python. Di Python 3.8 tetap pakai 3.13 (fallback teks).
+PYVER=$(python3 -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
+AIO_SPEC="aiogram>=3.0,<3.14"
+python3 -c 'import sys; raise SystemExit(0 if (sys.version_info[0],sys.version_info[1]) >= (3,9) else 1)' && AIO_SPEC="aiogram>=3.14,<3.15"
+/etc/vpn-bot/venv/bin/pip install -U pip "$AIO_SPEC" paramiko aiohttp >/dev/null
 
 IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
 [[ -z "$IFACE" ]] && IFACE="eth0"
@@ -12057,11 +12059,13 @@ systemctl restart systemd-journald 2>/dev/null || true
 # 6. Buat Virtualenv Python & Aktifkan Semua Layanan
 echo "[6/6] Menyiapkan Python Virtualenv & menyalakan seluruh layanan..."
 python3 -m venv /etc/vpn-bot/venv
-# Pin aiogram <3.14: 3.14+ butuh Python >=3.9. Lantai OS target adalah
-# Ubuntu 20.04 (Python 3.8), jadi tanpa pin pip akan mengangkat aiogram terlalu
-# baru / tak cocok di 3.8. Kode memakai API 3.0 (Router/F/FSM/Command) yang
-# stabil, dan CopyTextButton sudah ada fallback ImportError.
-/etc/vpn-bot/venv/bin/pip install -U pip "aiogram>=3.0,<3.14" paramiko aiohttp >/dev/null
+# Pin aiogram: CopyTextButton (tombol salin native) butuh aiogram >=3.14, yang
+# butuh Python >=3.9. Lantai OS target adalah Ubuntu 20.04 (Python 3.8), jadi
+# pilih versi sesuai Python. Di Python 3.8 tetap pakai 3.13 (fallback teks).
+PYVER=$(python3 -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')
+AIO_SPEC="aiogram>=3.0,<3.14"
+python3 -c 'import sys; raise SystemExit(0 if (sys.version_info[0],sys.version_info[1]) >= (3,9) else 1)' && AIO_SPEC="aiogram>=3.14,<3.15"
+/etc/vpn-bot/venv/bin/pip install -U pip "$AIO_SPEC" paramiko aiohttp >/dev/null
 
 IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}')
 [[ -z "$IFACE" ]] && IFACE="eth0"
