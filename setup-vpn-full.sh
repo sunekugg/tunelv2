@@ -4437,6 +4437,75 @@ class BlockGroupCallback(BaseMiddleware):
         return
 dp.callback_query.middleware(BlockGroupCallback())
 
+# ===== WAJIB JOIN (Force Join) — gerbang global di Private Chat =====
+# Dulu check_force_join hanya dipanggil di 2 handler (/start & back_home),
+# padahal ada 123 handler -> user yang belum join masih bisa pakai menu lain.
+# Kini dicek di middleware: semua pesan/klik tombol di DM diblokir bila belum join,
+# kecuali /start dan tombol "Saya Sudah Bergabung" (back_home) agar bisa cek ulang.
+_FJ_ALLOWED_MSG = {"start", "menu"}
+_FJ_CACHE = {}  # uid -> (bool_joined, ts); cache 60 detik agar tak spam get_chat_member
+
+async def _user_joined(user_id: int) -> bool:
+    if user_id == ADMIN_ID:
+        return True
+    fj = get_setting("force_join_chat", "").strip()
+    if not fj:
+        return True
+    now = time.time()
+    hit = _FJ_CACHE.get(user_id)
+    if hit and now - hit[1] < 60:
+        return hit[0]
+    try:
+        member = await bot.get_chat_member(chat_id=fj, user_id=user_id)
+        joined = member.status in ("member", "administrator", "creator", "restricted")
+    except Exception:
+        # Bot belum admin di channel target / target salah -> jangan kunci semua user
+        joined = True
+    _FJ_CACHE[user_id] = (joined, now)
+    return joined
+
+class ForceJoinMessage(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        chat = getattr(event, "chat", None)
+        if chat is None or chat.id < 0:
+            return await handler(event, data)
+        uid = getattr(getattr(event, "from_user", None), "id", 0)
+        if uid == ADMIN_ID:
+            return await handler(event, data)
+        txt = getattr(event, "text", "") or ""
+        first = txt.split()[0].lstrip("/").split("@")[0].lower() if txt else ""
+        if first in _FJ_ALLOWED_MSG:
+            return await handler(event, data)
+        if not await _user_joined(uid):
+            fj_txt, fj_kb = build_force_join_prompt()
+            await event.answer(fj_txt, parse_mode="HTML", reply_markup=fj_kb)
+            return
+        return await handler(event, data)
+
+class ForceJoinCallback(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        msg = getattr(event, "message", None)
+        chat = getattr(msg, "chat", None)
+        if chat is None or chat.id < 0:
+            return await handler(event, data)
+        uid = getattr(getattr(event, "from_user", None), "id", 0)
+        if uid == ADMIN_ID:
+            return await handler(event, data)
+        cd = getattr(event, "data", "") or ""
+        # back_home = tombol "Saya Sudah Bergabung" -> izinkan cek ulang
+        if cd in ("back_home", "menu_main"):
+            return await handler(event, data)
+        if not await _user_joined(uid):
+            try:
+                await event.answer("🔒 Wajib join channel/grup terlebih dahulu!", show_alert=True)
+            except Exception:
+                pass
+            return
+        return await handler(event, data)
+
+dp.message.middleware(ForceJoinMessage())
+dp.callback_query.middleware(ForceJoinCallback())
+
 dp.include_router(router)
 
 def build_force_join_prompt():
