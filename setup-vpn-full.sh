@@ -4064,6 +4064,38 @@ def bot_ms_label() -> str:
     v = _BOT_MS["v"]
     return f"{v} ms" if v >= 0 else "mengukur..."
 
+# =====================================================================
+# DURASI AKUN FLEKSIBEL (menit / jam / hari)
+# Akun Xray: presisi menit penuh. Akun SSH: kedaluwarsa OS (useradd -e)
+# hanya terima YYYY-MM-DD, jadi di level OS membulat ke hari; penghapusan
+# presisi tetap ditegakkan bot via worker (expired_at = unix timestamp).
+# =====================================================================
+_DUR_RE = re.compile(r"^\s*(\d{1,6})\s*([mhd]?)\s*$", re.IGNORECASE)
+
+def parse_duration_min(raw) -> int | None:
+    """Parse '30m'/'2h'/'1d'/'45' (default hari) -> total menit. None = invalid."""
+    if raw is None:
+        return None
+    if isinstance(raw, int):
+        return raw * 1440 if raw > 0 else None
+    m = _DUR_RE.match(str(raw))
+    if not m:
+        return None
+    n, unit = int(m.group(1)), m.group(2).lower()
+    if n <= 0:
+        return None
+    return {"m": n, "h": n * 60, "d": n * 1440, "": n * 1440}[unit]
+
+def fmt_dur_min(total_min: int) -> str:
+    """Total menit -> label '30 Menit' / '2 Jam' / '5 Hari' / gabungan jam+menit."""
+    if total_min % 1440 == 0:
+        d = total_min // 1440
+        return "Unlimited" if d <= 0 else f"{d} Hari"
+    h, r = divmod(total_min, 60)
+    if h == 0:
+        return f"{r} Menit"
+    return f"{h} Jam {r} Menit" if r else f"{h} Jam"
+
 def mask_str(s: str) -> str:
     if not s or s == "-":
         return "-"
@@ -5516,8 +5548,9 @@ async def _finalize_or_ask_days(msg, tg_user, state, srv, proto, uname, secret, 
     if is_admin(tg_user.id):
         await state.set_state(FormState.create_days)
         await msg.answer(
-            "📅 <b>Masukkan masa aktif akun (hari)</b>\n"
-            "• Angka &gt; 0 = masa aktif berapa hari\n"
+            "📅 <b>Masukkan masa aktif akun</b>\n"
+            "• <code>30m</code> = 30 menit | <code>2h</code> = 2 jam | <code>3d</code> = 3 hari\n"
+            "• Angka polos (mis. <code>30</code>) dihitung sebagai <b>hari</b>\n"
             "• <code>0</code> = <b>Unlimited</b> (tanpa masa berlaku)",
             parse_mode="HTML"
         )
@@ -5531,10 +5564,13 @@ async def msg_create_days(msg: Message, state: FSMContext):
     if msg.chat.id < 0:
         return
     raw = (msg.text or "").strip()
-    if not re.fullmatch(r"\d{1,5}", raw):
-        await msg.answer("⚠️ Masukkan angka hari yang valid (contoh: 30). Untuk unlimited isi 0:")
-        return
-    days = int(raw)
+    if re.fullmatch(r"0+", raw):
+        dur_min = 0  # unlimited
+    else:
+        dur_min = parse_duration_min(raw)
+        if dur_min is None:
+            await msg.answer("⚠️ Format salah. Contoh: <code>30m</code> (menit), <code>2h</code> (jam), <code>3d</code> (hari). Untuk unlimited isi 0:", parse_mode="HTML")
+            return
     data = await state.get_data()
     uname = data.get("username") or ""
     secret = data.get("secret") or ""
@@ -5551,10 +5587,10 @@ async def msg_create_days(msg: Message, state: FSMContext):
     await state.clear()
     await finalize_account_creation(
         msg, msg.from_user, srv, data.get("proto", "ssh"),
-        uname, secret, edit_mode=data.get("edit_mode", False), custom_days=days)
+        uname, secret, edit_mode=data.get("edit_mode", False), custom_dur_min=dur_min)
 
 
-async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, uname: str, secret: str, edit_mode: bool = False, custom_days: int | None = None):
+async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, uname: str, secret: str, edit_mode: bool = False, custom_dur_min: int | None = None):
     try:
         user_id = tg_user.id
         now = int(time.time())
@@ -5565,11 +5601,23 @@ async def finalize_account_creation(msg_obj: Message, tg_user, srv, proto: str, 
         srv_spd = srv["speed_mbps"] if ("speed_mbps" in srv.keys() and srv["speed_mbps"]) else 0
         speed_mbps = int(srv_spd) if int(srv_spd) > 0 else get_int_setting("default_speed_mbps", 0, 0)
 
-        # Admin bisa menentukan hari saat buat akun (0 = unlimited); selain itu pakai default.
-        days = int(custom_days) if custom_days is not None else get_int_setting("default_days", 7, 1)
-        exp_ts = now + (days * 86400) if days > 0 else 4102444800
+        # Durasi akun (menit). Prioritas: input admin > default_dur_min (menit) > default_days (hari).
+        dur_min_total = None
+        if custom_dur_min is not None:
+            dur_min_total = 0 if custom_dur_min <= 0 else custom_dur_min
+        else:
+            ddm = get_setting("default_dur_min", "").strip()
+            if ddm:
+                dm = parse_duration_min(ddm)
+                dur_min_total = 0 if ddm in ("0", "unlimited", "unl", "inf") else dm
+        if dur_min_total is None:
+            days = get_int_setting("default_days", 7, 1)
+            dur_min_total = days * 1440
+        exp_ts = now + (dur_min_total * 60) if dur_min_total > 0 else 4102444800
+        # SSH: OS (useradd -e) hanya terima tanggal -> dibulatkan ke atas ke hari berikutnya
+        # agar akun permenit tak langsung kedaluwarsa di level OS pada hari itu.
+        exp_ssh_date = (datetime.fromtimestamp(exp_ts) + timedelta(days=1)).strftime("%Y-%m-%d") if dur_min_total > 0 else datetime.fromtimestamp(exp_ts).strftime("%Y-%m-%d")
         exp_display = datetime.fromtimestamp(exp_ts).strftime("%Y-%m-%d")
-        exp_ssh_date = exp_display
 
         # Buat akun di server tujuan; gagal => JANGAN simpan ke DB (dulu error diabaikan)
         if srv["is_local"] == 1:
@@ -6197,7 +6245,15 @@ async def msg_set_cfg(msg: Message, state: FSMContext):
     data = await state.get_data()
     key = data["cfg_key"]
     raw_txt = (msg.text or "").strip().lower()
-    if raw_txt in ("unlimited", "unl", "0", "inf"):
+    if key == "default_dur_min":
+        if raw_txt in ("unlimited", "unl", "0", "inf"):
+            val_str = "0"
+        elif parse_duration_min(raw_txt) is None:
+            await msg.answer("⚠️ Format salah. Contoh: <code>30m</code>, <code>2h</code>, <code>1d</code>. Ketik 0 untuk unlimited.", parse_mode="HTML")
+            return
+        else:
+            val_str = raw_txt
+    elif raw_txt in ("unlimited", "unl", "0", "inf"):
         val_str = "0"
     else:
         m = re.search(r"\d+", raw_txt)
@@ -6211,7 +6267,11 @@ async def msg_set_cfg(msg: Message, state: FSMContext):
     elif key == "default_speed_mbps":
         engine.apply_global_speed_limit(int(val_str))
     await state.clear()
-    disp_val = "♾ Unlimited (0)" if val_str == "0" and key in ("default_days", "default_ip_limit", "default_quota_gb", "default_speed_mbps", "user_create_max") else val_str
+    if key == "default_dur_min":
+        _pv = parse_duration_min(val_str) if val_str not in ("0",) else 0
+        disp_val = "♾ Unlimited (0)" if val_str == "0" else fmt_dur_min(_pv)
+    else:
+        disp_val = "♾ Unlimited (0)" if val_str == "0" and key in ("default_days", "default_ip_limit", "default_quota_gb", "default_speed_mbps", "user_create_max") else val_str
     await msg.answer(f"✅ Pengaturan <code>{key}</code> berhasil disimpan menjadi: <b>{disp_val}</b>", parse_mode="HTML", reply_markup=admin_menu_kb())
 
 
@@ -6471,15 +6531,18 @@ async def cb_adm_lock_cfg(cb: CallbackQuery):
 @router.callback_query(F.data == "adm_limits_cfg")
 async def cb_adm_limits_cfg(cb: CallbackQuery):
     if not is_admin(cb.from_user.id): return
+    _ddm = get_setting("default_dur_min", "").strip()
+    _dur_lbl = (fmt_dur_min(parse_duration_min(_ddm)) if _ddm and parse_duration_min(_ddm) else ("Unlimited" if _ddm in ("0", "unlimited", "unl", "inf") else f"{get_int_setting('default_days', 7, 1)} Hari"))
     txt = (
         "<b>DURASI, KUOTA, SPEED & LIMIT BUAT</b>\n────────────────────────────\n"
-        f"• Masa Aktif Reguler : <b>{get_int_setting('default_days', 7, 1)} Hari</b>\n"
+        f"• Masa Aktif Reguler : <b>{_dur_lbl}</b>\n"
         f"• Limit Buat Akun : <b>{get_int_setting('user_create_max', 1, 0)}x dalam {get_int_setting('user_create_days', 3, 1)} Hari</b>\n"
         f"• Limit IP : <b>{'♾ Unlimited' if get_int_setting('default_ip_limit', 2, 0) <= 0 else str(get_int_setting('default_ip_limit', 2, 0)) + ' IP'}</b> | Kuota: <b>{get_int_setting('default_quota_gb', 50, 0)} GB</b>\n"
         f"• Speed Limit : <b>{get_int_setting('default_speed_mbps', 0, 0)} Mbps</b> | Max User: <b>{get_int_setting('max_users_per_vps', 100, 1)}</b>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📅 Masa Aktif (Hari)", callback_data="set_cfg:default_days")],
+        [InlineKeyboardButton(text="📅 Masa Aktif (Hari)", callback_data="set_cfg:default_days"),
+         InlineKeyboardButton(text="⏱️ Masa Aktif (m/h)", callback_data="set_cfg:default_dur_min")],
         [InlineKeyboardButton(text="🔢 Max Buat Akun", callback_data="set_cfg:user_create_max"), InlineKeyboardButton(text="📆 Rentang Hari Buat", callback_data="set_cfg:user_create_days")],
         [InlineKeyboardButton(text="🛡 Limit IP", callback_data="set_cfg:default_ip_limit")],
         [InlineKeyboardButton(text="📦 Kuota (GB)", callback_data="set_cfg:default_quota_gb"), InlineKeyboardButton(text="🚀 Speed (Mbps)", callback_data="set_cfg:default_speed_mbps")],
