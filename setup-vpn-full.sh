@@ -4009,7 +4009,7 @@ def _migrate_old_theme():
         print(f"[theme] migrated '{cur}' -> '{mapped}'")
 
 
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import Bot, Dispatcher, F, Router, BaseMiddleware
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -4387,6 +4387,52 @@ class FormState(StatesGroup):
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
+
+# Perintah setup yang BOLEH jalan di grup (hanya admin) — untuk nempelkan topic notifikasi.
+_GROUP_ALLOWED_CMDS = {"setbuat", "setcreate", "setlock", "setmultilogin", "id", "getid", "topicid", "setlogin"}
+
+class BlockGroupInteraction(BaseMiddleware):
+    """Bot ini khusus Private Chat (DM). Di grup hanya jalan perintah setup admin.
+    Semua interaksi lain di grup (menu, tombol, teks bebas) diabaikan diam-diam,
+    kecuali /start yang punya balasan khusus 'klik untuk DM'."""
+    async def __call__(self, handler, event, data):
+        chat = getattr(event, "chat", None) or getattr(getattr(event, "message", None), "chat", None)
+        if chat is None or chat.id >= 0:
+            return await handler(event, data)
+        # --- Ini grup/channel ---
+        uid = getattr(getattr(event, "from_user", None), "id", 0)
+        if uid == ADMIN_ID:
+            # Admin: hanya izinkan perintah setup
+            txt = getattr(event, "text", "") or ""
+            first = txt.split()[0].lstrip("/").split("@")[0].lower() if txt else ""
+            if first in _GROUP_ALLOWED_CMDS:
+                return await handler(event, data)
+            return
+        # Non-admin: hanya /start & /menu yang dibalas (arahkan ke DM). Sisanya diabaikan.
+        txt = getattr(event, "text", "") or ""
+        first = txt.split()[0].lstrip("/").split("@")[0].lower() if txt else ""
+        if first in ("start", "menu"):
+            return await handler(event, data)
+        return  # diam: abaikan pesan teks lain di grup
+
+dp.message.middleware(BlockGroupInteraction())
+# Klik tombol apa pun di grup diblokir (tombol notifikasi tak fungsional di grup)
+class BlockGroupCallback(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        msg = getattr(event, "message", None)
+        chat = getattr(msg, "chat", None)
+        if chat is None or chat.id >= 0:
+            return await handler(event, data)
+        uid = getattr(getattr(event, "from_user", None), "id", 0)
+        if uid == ADMIN_ID:
+            return await handler(event, data)  # admin boleh kelola tombol di grup
+        try:
+            await event.answer("⚠️ Tombol ini hanya bisa dipakai di Private Chat (DM) bot.", show_alert=True)
+        except Exception:
+            pass
+        return
+dp.callback_query.middleware(BlockGroupCallback())
+
 dp.include_router(router)
 
 def build_force_join_prompt():
