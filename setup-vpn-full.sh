@@ -5347,23 +5347,31 @@ async def cb_mnd_reset(cb: CallbackQuery):
         return
     srv = conn_srv(acc)
     uname = acc["username"]
+    is_local = (srv is None) or (srv["is_local"] == 1)
+    # Tanggal expired asli dari DB (jangan timpa dgn 2099 — dulu bikin akun SSH
+    # jadi permanen di level OS setelah reset, padahal di DB masih terbatas).
+    exp_ssh_date = datetime.fromtimestamp(acc["expired_at"]).strftime("%Y-%m-%d")
     ok = True
-    if acc["protocol"] == "ssh":
-        try:
+    try:
+        # Putus sesi: recreate akun di server tujuan.
+        # - SSH : kill sesi lalu recreate user (useradd -e <expired asli>)
+        # - Xray: hapus + tambah ulang di config (UUID lama tak berlaku)
+        if acc["protocol"] == "ssh" and is_local:
             await asyncio.to_thread(engine.kill_ssh_sessions, uname)
-        except Exception:
-            ok = False
-    else:
-        try:
-            if srv and srv["is_local"] == 1:
-                await asyncio.to_thread(engine.kill_active_ssh_pids, uname)
-            else:
-                await asyncio.to_thread(engine.remove_account_from_server, srv, acc["protocol"], uname)
-                await asyncio.to_thread(engine.add_account_to_server, srv, acc["protocol"], uname, acc["secret"], "2099-12-31")
-        except Exception:
-            ok = False
+        else:
+            await asyncio.to_thread(engine.remove_account_from_server, srv, acc["protocol"], uname)
+            await asyncio.to_thread(engine.add_account_to_server, srv, acc["protocol"], uname, acc["secret"], exp_ssh_date)
+    except Exception:
+        ok = False
     with db_conn() as conn:
         conn.execute("UPDATE accounts SET active_sessions=0, locked_until=0, last_ips='' WHERE id=?", (acc["id"],))
+    # PENTING: buka kunci level OS sekarang. Jangan andalkan worker — worker hanya
+    # memproses akun dgn locked_until > 0, sedangkan reset men-set locked_until=0,
+    # sehingga password SSH yang tertimpa LOCKED_PASSWORD tak pernah dipulihkan.
+    try:
+        await asyncio.to_thread(engine.set_remote_or_local_lock, srv, acc["protocol"], uname, acc["secret"], False)
+    except Exception:
+        pass
     await cb.answer("✅ Sesi direset — IP lama terputus." if ok else "⚠️ Reset selesai sebagian.", show_alert=True)
     with db_conn() as conn:
         acc = conn.execute("SELECT * FROM accounts WHERE id=?", (acc["id"],)).fetchone()
@@ -5380,6 +5388,7 @@ async def cb_mnd_secret(cb: CallbackQuery):
     new = (uuid.uuid4().hex if proto != "ssh" else "".join(random.choices(
         "abcdefghjkmnpqrstuvwxyzACDEFGHJKLMNPQRSTUVWXYZ23456789", k=12)))
     ok = True
+    exp_ssh_date = datetime.fromtimestamp(acc["expired_at"]).strftime("%Y-%m-%d")
     try:
         if proto == "ssh":
             await asyncio.to_thread(engine.sync_ssh_password_local, uname, new)
@@ -5389,7 +5398,7 @@ async def cb_mnd_secret(cb: CallbackQuery):
                 await asyncio.to_thread(engine.add_xray_user, proto, uname, new)
             else:
                 await asyncio.to_thread(engine.remove_account_from_server, srv, proto, uname)
-                await asyncio.to_thread(engine.add_account_to_server, srv, proto, uname, new, "2099-12-31")
+                await asyncio.to_thread(engine.add_account_to_server, srv, proto, uname, new, exp_ssh_date)
     except Exception:
         ok = False
         new = old
