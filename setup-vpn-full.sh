@@ -4423,9 +4423,13 @@ class BlockGroupCallback(BaseMiddleware):
         chat = getattr(msg, "chat", None)
         if chat is None or chat.id >= 0:
             return await handler(event, data)
+        # Semua orang (termasuk admin) tak bisa pakai tombol menu di grup.
+        # Tombol di grup hanya milik notifikasi; kelola lewat DM.
         uid = getattr(getattr(event, "from_user", None), "id", 0)
-        if uid == ADMIN_ID:
-            return await handler(event, data)  # admin boleh kelola tombol di grup
+        cd = getattr(event, "data", "") or ""
+        # Pengecualian: tombol setup topic (dari /id admin di grup) tetap boleh utk admin
+        if uid == ADMIN_ID and cd.startswith("bind_grp:"):
+            return await handler(event, data)
         try:
             await event.answer("⚠️ Tombol ini hanya bisa dipakai di Private Chat (DM) bot.", show_alert=True)
         except Exception:
