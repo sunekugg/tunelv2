@@ -6164,7 +6164,7 @@ async def cb_adm_slowdns_udp(cb: CallbackQuery):
     s_ug = await asyncio.to_thread(_stat, "udpgw")
     txt = (
         "<b>MANAJEMEN SlowDNS & UDP-Custom</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• <b>SlowDNS (VayDNS multi-record)</b> : {s_sd}\n"
+        f"• <b>SlowDNS (multi-record)</b> : {s_sd}\n"
         f"• <b>UDP-Custom</b>       : {s_uc}\n"
         f"• <b>NS</b>              : <code>ns-{html.escape(DEFAULT_DOMAIN)}</code>\n"
         f"• <b>SlowDNS Port</b>    : <code>53, 5300</code>\n"
@@ -6192,7 +6192,7 @@ async def cb_sd_regen(cb: CallbackQuery):
     def _regen():
         import os as _os
         _os.system("rm -f /etc/slowdns/server.key /etc/slowdns/server.pub")
-        _os.system("/usr/local/bin/vaydns-server -gen-key -privkey-file /etc/slowdns/server.key -pubkey-file /etc/slowdns/server.pub")
+        _os.system("/usr/local/bin/slowdns-server -gen-key -privkey-file /etc/slowdns/server.key -pubkey-file /etc/slowdns/server.pub")
         _os.system("chmod 600 /etc/slowdns/server.key")
         _os.system("systemctl restart slowdns")
         pub = "-"
@@ -6241,7 +6241,7 @@ async def cb_sd_regenservice(cb: CallbackQuery):
         unit = (
             "[Unit]\nDescription=SlowDNS dnstt Server\nAfter=network.target\n\n"
             "[Service]\n"
-            f"ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-{dom} -upstream 127.0.0.1:10015 -record-type txt -dnstt-compat\n"
+            f"ExecStart=/usr/local/bin/slowdns-server -udp :5300 -privkey-file /etc/slowdns/server.key -domain ns-{dom} -upstream 127.0.0.1:10015\n"
             "Restart=on-failure\nRestartSec=3\n\n"
             "[Install]\nWantedBy=multi-user.target\n"
         )
@@ -10997,7 +10997,7 @@ echo "[6/6b] Memasang SlowDNS (dnstt) & UDP-Custom..."
 ARCH_X=$(uname -m)
 case "$ARCH_X" in x86_64) XARCH="amd64";; aarch64|arm64) XARCH="arm64";; *) XARCH="amd64";; esac
 mkdir -p /etc/slowdns /etc/udp /etc/iptables
-VAYDNS_BASE="https://raw.githubusercontent.com/sunekugg/tunelv2/main/bin"
+SLOWDNS_BASE="https://raw.githubusercontent.com/sunekugg/tunelv2/main/bin"
 __fetch_raw() {  # $1=outfile $2=owner/repo/branch/path — fallback IP statis bila DNS mati
     local _OUT="$1" _P="$2" _IP
     rm -f "$_OUT"
@@ -11011,15 +11011,11 @@ __fetch_raw() {  # $1=outfile $2=owner/repo/branch/path — fallback IP statis b
     done
     return 1
 }
-# --- vaydns-server (mod VayDNS: multi-record TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA) ---
-if ! head -c4 /usr/local/bin/vaydns-server 2>/dev/null | grep -q $'\x7fELF'; then
-    rm -f /usr/local/bin/vaydns-server
-    __fetch_raw /usr/local/bin/vaydns-server "sunekugg/tunelv2/main/bin/vaydns-server-linux-${XARCH}" || true
-    if ! head -c4 /usr/local/bin/vaydns-server 2>/dev/null | grep -q $'\x7fELF'; then
-        wget -qO /usr/local/bin/vaydns-server \
-            "https://github.com/net2share/vaydns/releases/download/v0.2.8/vaydns-server-linux-${XARCH}" 2>/dev/null || true
-    fi
-    chmod +x /usr/local/bin/vaydns-server 2>/dev/null || true
+# --- slowdns-server (multi-record TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA) ---
+if ! head -c4 /usr/local/bin/slowdns-server 2>/dev/null | grep -q $'\x7fELF'; then
+    rm -f /usr/local/bin/slowdns-server
+    __fetch_raw /usr/local/bin/slowdns-server "sunekugg/tunelv2/main/bin/slowdns-server-linux-${XARCH}" || true
+    chmod +x /usr/local/bin/slowdns-server 2>/dev/null || true
 fi
 # --- badvpn udpgw (fix UDPGW/badvpn :7300) ---
 if ! head -c4 /usr/local/bin/udpgw 2>/dev/null | grep -q $'\x7fELF'; then
@@ -11033,8 +11029,8 @@ if ! head -c4 /usr/local/bin/udpgw 2>/dev/null | grep -q $'\x7fELF'; then
     done
     chmod +x /usr/local/bin/udpgw 2>/dev/null || true
 fi
-# legacy name: dnstt-server → vaydns-server (kompatibilitas lama)
-[[ -x /usr/local/bin/vaydns-server ]] && ln -sf /usr/local/bin/vaydns-server /usr/local/bin/dnstt-server
+# legacy alias: dnstt-server → slowdns-server (kompatibilitas lama)
+[[ -x /usr/local/bin/slowdns-server ]] && ln -sf /usr/local/bin/slowdns-server /usr/local/bin/dnstt-server
 # --- udp-custom ---
 UC_BIN=/usr/local/bin/udp-custom
 UC_OK=0
@@ -11066,7 +11062,7 @@ else
     UC_OK=1
 fi
 # Verifikasi binari SETELAH semua unduhan (dulu dicek sebelum unduh -> alarm palsu)
-for _BINCHK in vaydns-server udpgw udp-custom; do
+for _BINCHK in slowdns-server udpgw udp-custom; do
     if ! head -c4 "/usr/local/bin/$_BINCHK" 2>/dev/null | grep -q $'\x7fELF'; then
         echo "  !! PERINGATAN: $_BINCHK gagal diunduh — perbaiki DNS/koneksi lalu jalankan ulang installer"
     fi
@@ -11089,7 +11085,7 @@ if ! getent ahostsv4 deb.debian.org >/dev/null 2>&1 && ! getent ahostsv4 archive
 fi
 # --- generate key dnstt (sekali saja) ---
 if [[ ! -f /etc/slowdns/server.pub && -x /usr/local/bin/dnstt-server ]]; then
-    /usr/local/bin/vaydns-server -gen-key \
+    /usr/local/bin/slowdns-server -gen-key \
         -privkey-file /etc/slowdns/server.key \
         -pubkey-file /etc/slowdns/server.pub >/dev/null 2>&1 || true
     chmod 600 /etc/slowdns/server.key 2>/dev/null || true
@@ -11126,7 +11122,7 @@ After=network.target vpn-ws-bridge.service
 Wants=vpn-ws-bridge.service
 
 [Service]
-ExecStart=/usr/local/bin/dnstt-server -udp :5300 -privkey-file /etc/slowdns/server.key -mtu 1232 -domain ns-${DOMAIN} -upstream 127.0.0.1:10015 -record-type txt -dnstt-compat
+ExecStart=/usr/local/bin/dnstt-server -udp :5300 -privkey-file /etc/slowdns/server.key -mtu 1232 -domain ns-${DOMAIN} -upstream 127.0.0.1:10015
 Restart=on-failure
 RestartSec=3
 
@@ -11296,7 +11292,7 @@ for srv in xray dropbear nginx vpn-ws-bridge vpn-proto-daemons vpn-telegram-bot;
     printf " %-24s : %s\n" "$srv" "$st"
 done
 echo "-----------------------------------------------------------------------"
-echo " SlowDNS VayDNS  : UDP/TCP 53 (vaydns multi-record: TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA)"
+echo " SlowDNS         : UDP/TCP 53 (multi-record: TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA)"
 if [[ -x /usr/local/bin/udp-custom ]] && head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
     echo " UDP-Custom      : UDP 36712 (udp-custom: active)"
 else
@@ -12077,7 +12073,7 @@ echo "[6/6b] Memasang SlowDNS (dnstt) & UDP-Custom..."
 ARCH_X=$(uname -m)
 case "$ARCH_X" in x86_64) XARCH="amd64";; aarch64|arm64) XARCH="arm64";; *) XARCH="amd64";; esac
 mkdir -p /etc/slowdns /etc/udp /etc/iptables
-VAYDNS_BASE="https://raw.githubusercontent.com/sunekugg/tunelv2/main/bin"
+SLOWDNS_BASE="https://raw.githubusercontent.com/sunekugg/tunelv2/main/bin"
 __fetch_raw() {  # $1=outfile $2=owner/repo/branch/path — fallback IP statis bila DNS mati
     local _OUT="$1" _P="$2" _IP
     rm -f "$_OUT"
@@ -12091,15 +12087,11 @@ __fetch_raw() {  # $1=outfile $2=owner/repo/branch/path — fallback IP statis b
     done
     return 1
 }
-# --- vaydns-server (mod VayDNS: multi-record TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA) ---
-if ! head -c4 /usr/local/bin/vaydns-server 2>/dev/null | grep -q $'\x7fELF'; then
-    rm -f /usr/local/bin/vaydns-server
-    __fetch_raw /usr/local/bin/vaydns-server "sunekugg/tunelv2/main/bin/vaydns-server-linux-${XARCH}" || true
-    if ! head -c4 /usr/local/bin/vaydns-server 2>/dev/null | grep -q $'\x7fELF'; then
-        wget -qO /usr/local/bin/vaydns-server \
-            "https://github.com/net2share/vaydns/releases/download/v0.2.8/vaydns-server-linux-${XARCH}" 2>/dev/null || true
-    fi
-    chmod +x /usr/local/bin/vaydns-server 2>/dev/null || true
+# --- slowdns-server (multi-record TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA) ---
+if ! head -c4 /usr/local/bin/slowdns-server 2>/dev/null | grep -q $'\x7fELF'; then
+    rm -f /usr/local/bin/slowdns-server
+    __fetch_raw /usr/local/bin/slowdns-server "sunekugg/tunelv2/main/bin/slowdns-server-linux-${XARCH}" || true
+    chmod +x /usr/local/bin/slowdns-server 2>/dev/null || true
 fi
 # --- badvpn udpgw (fix UDPGW/badvpn :7300) ---
 if ! head -c4 /usr/local/bin/udpgw 2>/dev/null | grep -q $'\x7fELF'; then
@@ -12113,8 +12105,8 @@ if ! head -c4 /usr/local/bin/udpgw 2>/dev/null | grep -q $'\x7fELF'; then
     done
     chmod +x /usr/local/bin/udpgw 2>/dev/null || true
 fi
-# legacy name: dnstt-server → vaydns-server (kompatibilitas lama)
-[[ -x /usr/local/bin/vaydns-server ]] && ln -sf /usr/local/bin/vaydns-server /usr/local/bin/dnstt-server
+# legacy alias: dnstt-server → slowdns-server (kompatibilitas lama)
+[[ -x /usr/local/bin/slowdns-server ]] && ln -sf /usr/local/bin/slowdns-server /usr/local/bin/dnstt-server
 # --- udp-custom ---
 UC_BIN=/usr/local/bin/udp-custom
 UC_OK=0
@@ -12146,7 +12138,7 @@ else
     UC_OK=1
 fi
 # Verifikasi binari SETELAH semua unduhan (dulu dicek sebelum unduh -> alarm palsu)
-for _BINCHK in vaydns-server udpgw udp-custom; do
+for _BINCHK in slowdns-server udpgw udp-custom; do
     if ! head -c4 "/usr/local/bin/$_BINCHK" 2>/dev/null | grep -q $'\x7fELF'; then
         echo "  !! PERINGATAN: $_BINCHK gagal diunduh — perbaiki DNS/koneksi lalu jalankan ulang installer"
     fi
@@ -12169,7 +12161,7 @@ if ! getent ahostsv4 deb.debian.org >/dev/null 2>&1 && ! getent ahostsv4 archive
 fi
 # --- generate key dnstt (sekali saja) ---
 if [[ ! -f /etc/slowdns/server.pub && -x /usr/local/bin/dnstt-server ]]; then
-    /usr/local/bin/vaydns-server -gen-key \
+    /usr/local/bin/slowdns-server -gen-key \
         -privkey-file /etc/slowdns/server.key \
         -pubkey-file /etc/slowdns/server.pub >/dev/null 2>&1 || true
     chmod 600 /etc/slowdns/server.key 2>/dev/null || true
@@ -12191,7 +12183,7 @@ After=network.target vpn-ws-bridge.service
 Wants=vpn-ws-bridge.service
 
 [Service]
-ExecStart=/usr/local/bin/dnstt-server -udp :5300 -privkey-file /etc/slowdns/server.key -mtu 1232 -domain ns-${DOMAIN} -upstream 127.0.0.1:10015 -record-type txt -dnstt-compat
+ExecStart=/usr/local/bin/dnstt-server -udp :5300 -privkey-file /etc/slowdns/server.key -mtu 1232 -domain ns-${DOMAIN} -upstream 127.0.0.1:10015
 Restart=on-failure
 RestartSec=3
 
@@ -12318,7 +12310,7 @@ for srv in xray dropbear nginx vpn-ws-bridge vpn-proto-daemons vpn-telegram-bot;
     printf " %-24s : %s\n" "$srv" "$st"
 done
 echo "-----------------------------------------------------------------------"
-echo " SlowDNS VayDNS  : UDP/TCP 53 (vaydns multi-record: TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA)"
+echo " SlowDNS         : UDP/TCP 53 (multi-record: TXT/NULL/CNAME/A/AAAA/NS/MX/SRV/CAA)"
 if [[ -x /usr/local/bin/udp-custom ]] && head -c4 /usr/local/bin/udp-custom 2>/dev/null | grep -q $'\x7fELF'; then
     echo " UDP-Custom      : UDP 36712 (udp-custom: active)"
 else
